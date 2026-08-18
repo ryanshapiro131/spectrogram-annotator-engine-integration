@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectrogram Viewer (POC)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0a0a0a; color: #eaeaea;
+               font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* ---- toolbar (kept as-is) ---- */
+  #bar { display: flex; align-items: center; gap: 14px; padding: 8px 12px;
+         background: #141414; border-bottom: 1px solid #262626; flex: 0 0 auto; z-index: 2; }
+  #bar h1 { font-size: 13px; font-weight: 600; margin: 0; color: #fff; letter-spacing: .3px; }
+  #bar .grp { display: flex; align-items: center; gap: 6px; }
+  #bar label { color: #9a9a9a; }
+  #src { width: 160px; background: #0c0c0c; color: #eaeaea; border: 1px solid #333;
+         border-radius: 5px; padding: 4px 7px; font: inherit; }
+  #bar button { background: #2b2b2b; color: #eaeaea; border: 1px solid #3a3a3a;
+                border-radius: 5px; padding: 4px 10px; cursor: pointer; font: inherit; }
+  #bar button:hover { background: #363636; }
+  .readout { font-variant-numeric: tabular-nums; color: #cfcfcf; }
+  .readout b { color: #fff; font-weight: 600; }
+  /* window-size selector (segmented buttons) */
+  #windows { display: none; align-items: center; gap: 0; }
+  #windows .wbtn { padding: 4px 9px; border: 1px solid #3a3a3a; border-right-width: 0;
+                   background: #1c1c1c; color: #cfcfcf; cursor: pointer; font: inherit;
+                   font-variant-numeric: tabular-nums; }
+  #windows .wbtn:first-child { border-radius: 5px 0 0 5px; }
+  #windows .wbtn:last-child { border-radius: 0 5px 5px 0; border-right-width: 1px; }
+  #windows .wbtn:hover { background: #2a2a2a; }
+  #windows .wbtn.on { background: #3a5a8a; color: #fff; border-color: #4a6a9a; }
+  #res { color: #9a9a9a; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hint { margin-left: auto; color: #6f6f6f; white-space: nowrap; }
+
+  /* ---- contained panel ---- */
+  #viewport { flex: 1 1 auto; min-height: 0; position: relative;
+              display: flex; align-items: center; justify-content: center; padding: 22px 26px; }
+  #panel { display: flex; width: 100%; max-width: 1600px; height: 66vh;
+           max-height: 100%; min-height: 220px; border: 1px solid #333; border-radius: 8px;
+           background: #000; overflow: hidden; box-shadow: 0 6px 26px rgba(0,0,0,.5); }
+
+  #axis { flex: 0 0 62px; width: 62px; height: 100%; display: block; background: #0c0c0c; }
+
+  #canvasWrap { position: relative; flex: 1 1 auto; min-width: 0; height: 100%; }
+  #spec { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #badge { position: absolute; left: 10px; bottom: 10px; padding: 5px 9px; border-radius: 6px;
+           background: rgba(0,0,0,.6); border: 1px solid #333; color: #bdbdbd;
+           font-variant-numeric: tabular-nums; pointer-events: none; }
+
+  /* ---- vertical time-zoom slider ---- */
+  #zoom { flex: 0 0 34px; width: 34px; height: 100%; position: relative;
+          background: #0c0c0c; border-left: 1px solid #222; cursor: ns-resize; user-select: none; }
+  #zoomTrack { position: absolute; left: 50%; top: 12px; bottom: 12px; width: 4px;
+               transform: translateX(-50%); background: #2a2a2a; border-radius: 2px; }
+  #zoomHandle { position: absolute; left: 50%; width: 22px; height: 16px;
+                transform: translate(-50%, -50%); background: #5c5c5c; border: 1px solid #808080;
+                border-radius: 5px; cursor: grab; }
+  #zoomHandle:active { cursor: grabbing; background: #6d6d6d; }
+  #zoom .zlbl { position: absolute; left: 0; right: 0; text-align: center; color: #666;
+                font-size: 11px; pointer-events: none; }
+  #zoom .zlbl.top { top: 1px; } #zoom .zlbl.bot { bottom: 1px; }
+
+  #err { position: absolute; inset: 22px 26px; display: none; place-items: center; padding: 24px;
+         text-align: center; color: #ff9c9c; background: #1a0f0f; border: 1px solid #4a2a2a;
+         border-radius: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <h1>Spectrogram Viewer</h1>
+    <div class="grp">
+      <label for="src">src</label>
+      <input id="src" value="" spellcheck="false" title="path to the engine output dir (contains manifest.json)">
+      <button id="load">Load</button>
+    </div>
+    <div class="grp">
+      <label>window</label>
+      <div id="windows" title="FFT window size — switches which precomputed pyramid is shown"></div>
+    </div>
+    <span id="res" title="frequency/time resolution of the current window">—</span>
+    <div class="grp readout">
+      <span>time <b id="rTime">—</b></span>
+      <span>freq <b id="rFreq">—</b></span>
+    </div>
+    <button id="reset" title="Fit whole file (0)">Fit</button>
+    <span class="hint">drag pan · wheel time-zoom · ⇧wheel freq-zoom · +/− zoom · ←→ pan · ⇧↑↓ freq · 0 fit</span>
+  </div>
+
+  <div id="viewport">
+    <div id="panel">
+      <canvas id="axis"></canvas>
+      <div id="canvasWrap">
+        <canvas id="spec"></canvas>
+        <div id="badge">—</div>
+      </div>
+      <div id="zoom" title="time zoom (drag)">
+        <span class="zlbl top">＋</span>
+        <div id="zoomTrack"></div>
+        <div id="zoomHandle"></div>
+        <span class="zlbl bot">－</span>
+      </div>
+    </div>
+    <div id="err"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

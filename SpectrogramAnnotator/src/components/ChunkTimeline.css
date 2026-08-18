@@ -1,0 +1,138 @@
+.chunk-timeline {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chunk-timeline-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.chunk-timeline-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chunk-timeline-time {
+  color: var(--accent);
+}
+
+.chunk-cells {
+  display: flex;
+  overflow-x: auto;
+  gap: 3px;
+  padding: 0 16px 10px;
+  scrollbar-width: thin;
+}
+
+.chunk-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 54px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  cursor: pointer;
+  transition: all 0.1s;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chunk-cell:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.chunk-cell--active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.chunk-cell--cached:not(.chunk-cell--active) {
+  border-color: rgba(26, 107, 138, 0.3);
+  background: rgba(26, 107, 138, 0.04);
+}
+
+.chunk-cell-num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  line-height: 1;
+}
+
+.chunk-cell--active .chunk-cell-num {
+  color: var(--accent);
+}
+
+.chunk-cell-time {
+  font-size: 9px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.chunk-cell--active .chunk-cell-time {
+  color: var(--accent);
+}
+
+.chunk-cache-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+/* sxx status pips */
+.chunk-pip {
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.chunk-pip--ready {
+  background: var(--green, #1a7a4a);
+  opacity: 0.8;
+}
+
+.chunk-pip--pending {
+  background: var(--amber, #92600a);
+  opacity: 0.7;
+  animation: pip-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pip-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%       { opacity: 0.9; }
+}
+
+.chunk-cell--sxx-ready:not(.chunk-cell--active) {
+  border-color: rgba(26, 122, 74, 0.35);
+}

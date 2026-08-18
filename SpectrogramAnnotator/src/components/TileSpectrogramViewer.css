@@ -1,0 +1,30 @@
+.tile-spec-viewer {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: #000;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.tile-spec-viewer:active {
+  cursor: grabbing;
+}
+.tile-spec-viewer canvas {
+  display: block;
+}
+.tile-spec-viewer-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.tile-spec-viewer-status--error {
+  color: #ff8080;
+}

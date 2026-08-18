@@ -1,0 +1,253 @@
+.spec-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Pass through to the underlying spectrogram (native click-to-seek, zoom,
+     etc.) unless annotation mode is explicitly enabled. */
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+}
+
+.spec-overlay--enabled {
+  pointer-events: auto;
+}
+
+.spec-overlay--enabled:hover,
+.spec-overlay--active {
+  cursor: crosshair;
+}
+
+/* Dim hint in bottom-left — only visible on hover */
+.spec-overlay-hint {
+  position: absolute;
+  bottom: 8px;
+  left: 10px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: rgba(255,255,255,0.45);
+  background: rgba(0,0,0,0.35);
+  padding: 3px 8px;
+  border-radius: 3px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.spec-overlay:hover .spec-overlay-hint {
+  opacity: 1;
+}
+.spec-overlay-hint--active {
+  opacity: 1 !important;
+  color: rgba(255,255,255,0.8);
+  background: rgba(0,0,0,0.55);
+}
+
+/* Vertical marker lines */
+.spec-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+
+.spec-marker-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  left: 0;
+}
+
+.spec-marker--start .spec-marker-line { background: rgba(255,255,255,0.9); }
+.spec-marker--end   .spec-marker-line { background: rgba(255,255,255,0.9); }
+.spec-marker--hover .spec-marker-line { background: rgba(255,255,255,0.4); }
+
+.spec-marker-label {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: #fff;
+  background: rgba(0,0,0,0.6);
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.spec-marker-label--end {
+  left: auto;
+  right: 6px;
+}
+.spec-marker-label--hover {
+  left: 6px;
+  color: rgba(255,255,255,0.6);
+  background: rgba(0,0,0,0.4);
+}
+
+/* Selected region */
+.spec-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid;
+  border-right: 2px solid;
+  pointer-events: none;
+}
+
+/* Label popup */
+.spec-popup {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 288px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: 20;
+  overflow: hidden;
+  pointer-events: all;
+  cursor: default;
+}
+
+.spec-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.spec-popup-layer {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  border-left: 3px solid var(--border-strong);
+  padding-left: 6px;
+  white-space: nowrap;
+}
+
+.spec-popup-times {
+  flex: 1;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spec-popup-duration {
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+
+.spec-popup-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.spec-popup-close:hover { color: var(--red); background: var(--red-light); }
+
+.spec-popup-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.spec-popup-input {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--ui);
+  outline: none;
+  transition: border-color 0.1s;
+}
+.spec-popup-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.spec-popup-confirm {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--ui);
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+.spec-popup-confirm:hover:not(:disabled) { background: var(--accent-mid); }
+.spec-popup-confirm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Existing annotations list */
+.spec-popup-existing {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 10px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.spec-popup-existing-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.spec-popup-existing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.spec-popup-existing-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.spec-popup-existing-time {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.spec-popup-existing-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

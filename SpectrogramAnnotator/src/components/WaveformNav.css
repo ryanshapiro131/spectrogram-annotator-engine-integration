@@ -1,0 +1,58 @@
+.waveform-nav {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.waveform-nav-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.waveform-nav-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.waveform-nav-time {
+  color: var(--accent);
+}
+
+.waveform-nav-hover {
+  color: var(--accent-mid);
+}
+
+.waveform-nav-loading {
+  color: var(--amber);
+  font-style: italic;
+}
+
+.waveform-nav-canvas-wrap {
+  width: 100%;
+  padding: 0 16px 10px;
+}
+
+.waveform-nav-canvas {
+  display: block;
+  width: 100%;
+  height: 64px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  cursor: pointer;
+  touch-action: none;
+}
