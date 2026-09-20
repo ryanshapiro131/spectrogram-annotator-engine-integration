@@ -12,15 +12,22 @@ import './TileSpectrogramViewer.css';
  *     one per 3-minute chunk — the tile pyramid isn't chunked, so there's no
  *     reason for the viewer to be either. Chunking still exists one layer up
  *     for streaming *audio* playback, but the spectrogram no longer cares.
- *   - Horizontal (time) pan/zoom only. The engine viewer also supports
- *     vertical frequency zoom, but nothing in this app's annotation model
- *     uses a frequency range, so that's left out to keep this component
- *     small — add it back by porting zoomFreq/clampVertical from
- *     viewer/app.js if a future annotation type needs it.
  *   - No client-side colormap/dB-range control: tiles are baked at
  *     generation time by the engine. If you need to change colormap or
  *     top_db, that's now an engine-generation-time setting, not a runtime
  *     one (see server.py's ENGINE_BIN invocation).
+ *
+ * Frequency axis: the manifest's per-window minFrequencyHz/maxFrequencyHz are
+ * the *theoretical* 0..Nyquist range every tile row spans (see buildRowToBin
+ * in the engine — row y always maps linearly to that theoretical axis,
+ * whether the render used a linear or log frequency scale). contentMin/
+ * MaxFrequencyHz is what's new: the engine now scans every analyzed column
+ * for where this file's actual signal lives and writes that separately, so
+ * this viewer can open zoomed to the real content instead of showing dead
+ * black rows above/below it — no more guessing from loaded tile pixels.
+ * vTop/vBot (below) are normalized [0,1] positions along the *theoretical*
+ * axis, exactly like the engine's own viewer/app.js, so the user can always
+ * zoom/pan back out to the full range even after opening cropped to content.
  *
  * Exposes getVisibleWindow() via ref, in ABSOLUTE file seconds — this is the
  * same contract SpectrogramOverlay expects (see its comment block), so the
@@ -32,6 +39,22 @@ const L0_MAX_PX = 8;   // one native column may stretch to at most this many px
 const WHEEL_SENS = 0.0022;
 const WHEEL_CAP = 0.08;
 const CLICK_DRAG_THRESHOLD = 4; // px — below this, a pointerup counts as a click/seek, not a pan
+const INITIAL_VIEW_SECONDS = 180; // ~3 minutes visible on initial load, instead of fitting the whole file
+const MIN_VSPAN = 1 / 64; // deepest frequency zoom (fraction of the full theoretical axis)
+const CONTENT_FIT_PAD = 0.06; // extra headroom (fraction of content span) above/below content on initial fit
+
+// Width of the frequency-zoom sidebar to the right of the canvas. The
+// annotation overlay (a sibling in App.jsx) is told to stop this many px
+// short of the right edge via a CSS var so its coordinates keep lining up
+// with the canvas — see TileSpectrogramViewer.css / SpectrogramOverlay.css.
+const FREQ_SIDEBAR_WIDTH = 46;
+
+function fmtFreq(hz) {
+  if (!isFinite(hz)) return '—';
+  return hz >= 1000 ? `${(hz / 1000).toFixed(hz >= 10000 ? 0 : 1)}k` : `${Math.round(hz)}`;
+}
+
+function clamp(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
 
 const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   {
@@ -41,30 +64,27 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     playheadTime = null,   // absolute seconds, draws a line if provided
     onSeek = null,          // (absoluteSeconds) => void — called on plain click (not drag)
     onVisibleWindowChange = null, // ({start,end}) => void, called after pan/zoom settles
-    freqCropTop = 0,        // 0..1 — fraction of the top (highest-freq) rows to crop out of view
   },
   ref
 ) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
-  const cropTopRef = useRef(freqCropTop);
-  // Smallest row index (0 = top/highest-freq) that any analyzed tile has
-  // been found to contain real signal in, for the currently loaded file.
-  // Cropping is capped to this so a loud transient that only reaches high
-  // frequencies occasionally can never get silently sliced off — see
-  // analyzeTileSignalTop() below.
-  const signalTopRowRef = useRef(null);
-  const analysisCanvasRef = useRef(null);
 
   const [status, setStatus] = useState('loading'); // loading | ready | error
+  // Bumped on every vertical pan/zoom so the sidebar (a plain React render,
+  // not a canvas) re-renders its handle positions/labels.
+  const [vTick, setVTick] = useState(0);
   const manifestRef = useRef(null);
   const curWindowRef = useRef(null);
   const tileCacheRef = useRef(new Map());
-  const viewRef = useRef({ startSec: 0, secPerPx: 1 });
+  // startSec/secPerPx: horizontal (time). vTop/vBot: vertical (frequency),
+  // normalized [0,1] fractions of the theoretical 0..Nyquist axis, 1 = top.
+  const viewRef = useRef({ startSec: 0, secPerPx: 1, vTop: 1, vBot: 0 });
   const sizeRef = useRef({ cssW: 0, cssH: height, dpr: 1 });
   const drawPendingRef = useRef(false);
-  const dragRef = useRef(null); // { startX, startSec, moved }
+  const notifyPendingRef = useRef(false);
+  const dragRef = useRef(null); // { startX, startY, startSec, startVTop, startVBot, moved }
   const playheadRef = useRef(playheadTime);
 
   // -------------------------------------------------------------------
@@ -84,8 +104,7 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         manifestRef.current = manifest;
         curWindowRef.current =
           manifest.windows.find(w => w.fftSize === manifest.defaultWindow) || manifest.windows[0];
-        signalTopRowRef.current = null; // reset the safety cap for the new file
-        fitAll();
+        setInitialZoom();
         setStatus('ready');
         scheduleDraw();
         notifyVisibleWindow();
@@ -99,14 +118,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifestUrl]);
-
-  // Keep the crop fraction in a ref (read inside draw(), which isn't itself
-  // a useCallback) and redraw whenever it changes.
-  useEffect(() => {
-    cropTopRef.current = Math.min(0.95, Math.max(0, freqCropTop || 0));
-    scheduleDraw();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freqCropTop]);
 
   // -------------------------------------------------------------------
   // Sizing — canvas backing store follows container width via ResizeObserver
@@ -137,7 +148,30 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   }, [height]);
 
   // -------------------------------------------------------------------
-  // View helpers (ported from the engine's viewer/app.js, time-axis only)
+  // Frequency axis helpers (ported from the engine's viewer/app.js)
+  // -------------------------------------------------------------------
+  function isLog() { return manifestRef.current && manifestRef.current.frequencyScale === 'log'; }
+  // Theoretical axis bounds (full pannable/zoomable range) for the current window.
+  function fMinHz() {
+    const w = curWindowRef.current;
+    return isLog() ? Math.max(w.minFrequencyHz, 1e-6) : w.minFrequencyHz;
+  }
+  function fMaxHz() { return curWindowRef.current.maxFrequencyHz; }
+  function vToFreq(v) {
+    const lo = fMinHz(), hi = fMaxHz();
+    return isLog() ? lo * Math.pow(hi / lo, v) : lo + v * (hi - lo);
+  }
+  function freqToV(f) {
+    const lo = fMinHz(), hi = fMaxHz();
+    return isLog() ? Math.log(Math.max(f, lo) / lo) / Math.log(hi / lo) : (f - lo) / (hi - lo);
+  }
+  // Row y (0=top/high-freq .. tileH-1=bottom/low-freq) always maps linearly
+  // to v — see buildRowToBin in the engine, which pre-warps rows for log
+  // scale so this holds true regardless of frequencyScale.
+  function vToRow(v, tileH) { return (1 - v) * (tileH - 1); }
+
+  // -------------------------------------------------------------------
+  // View helpers (time axis, ported from the engine's viewer/app.js)
   // -------------------------------------------------------------------
   function level0() { return curWindowRef.current.levels[0]; }
   function maxLevel() { return curWindowRef.current.levels[curWindowRef.current.levels.length - 1].level; }
@@ -154,6 +188,11 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
 
   function clampView() {
     if (!manifestRef.current) return;
+    clampHorizontal();
+    clampVertical();
+  }
+
+  function clampHorizontal() {
     const { minSPP, maxSPP } = zoomRange();
     const view = viewRef.current;
     view.secPerPx = clamp(view.secPerPx, minSPP, maxSPP);
@@ -163,14 +202,47 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     view.startSec = clamp(view.startSec, 0, Math.max(0, dur - visibleSec));
   }
 
-  function fitAll() {
+  function clampVertical() {
+    const view = viewRef.current;
+    const span = clamp(view.vTop - view.vBot, MIN_VSPAN, 1);
+    let top = clamp(view.vTop, span, 1);
+    let bot = top - span;
+    if (bot < 0) { bot = 0; top = span; }
+    view.vTop = top;
+    view.vBot = bot;
+  }
+
+  // Files in this project run ~1h long, so fitting the whole timeline on
+  // load would make every column span many minutes of audio — useless for
+  // annotation. Instead, start zoomed in on a fixed initial window and let
+  // the user zoom out from there if they want the wider view.
+  //
+  // Vertically, open fit to the file's real signal content (from the
+  // engine's contentMin/MaxFrequencyHz) instead of the full theoretical
+  // 0..Nyquist range, so there's no dead black band top or bottom — the
+  // "black bar" fix. A small pad is added since content detection uses a
+  // hard threshold and shouldn't visually clip right at the edge.
+  function setInitialZoom() {
     const { cssW } = sizeRef.current;
     const manifest = manifestRef.current;
+    const w = curWindowRef.current;
+    const targetVisibleSec = Math.min(INITIAL_VIEW_SECONDS, manifest.durationSeconds);
+
+    const contentLo = w.contentMinFrequencyHz;
+    const contentHi = w.contentMaxFrequencyHz;
+    const contentSpanHz = Math.max(1e-6, contentHi - contentLo);
+    const padHz = contentSpanHz * CONTENT_FIT_PAD;
+    const vBot = freqToV(Math.max(fMinHz(), contentLo - padHz));
+    const vTop = freqToV(Math.min(fMaxHz(), contentHi + padHz));
+
     viewRef.current = {
       startSec: 0,
-      secPerPx: manifest.durationSeconds / Math.max(1, cssW || 1),
+      secPerPx: targetVisibleSec / Math.max(1, cssW || 1),
+      vTop: clamp(Math.max(vTop, vBot + MIN_VSPAN), 0, 1),
+      vBot: clamp(vBot, 0, 1),
     };
     clampView();
+    setVTick(t => t + 1);
   }
 
   function pickLevel() {
@@ -184,9 +256,21 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     const tUnder = timeAtX(anchorX);
     const view = viewRef.current;
     view.secPerPx *= factor;
-    clampView();
+    clampHorizontal();
     view.startSec = tUnder - anchorX * view.secPerPx;
-    clampView();
+    clampHorizontal();
+  }
+
+  // Zoom the frequency axis by `factor` (>1 = zoom out), keeping the value
+  // under `anchorFrac` (0=bottom..1=top of the canvas) fixed on screen.
+  function zoomFreq(factor, anchorFrac) {
+    const view = viewRef.current;
+    const vUnder = view.vBot + anchorFrac * (view.vTop - view.vBot);
+    const span = clamp((view.vTop - view.vBot) * factor, MIN_VSPAN, 1);
+    view.vBot = vUnder - anchorFrac * span;
+    view.vTop = view.vBot + span;
+    clampVertical();
+    setVTick(t => t + 1);
   }
 
   function notifyVisibleWindow() {
@@ -206,57 +290,13 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       .replace('{window}', w.fftSize).replace('{level}', L).replace('{tile}', t);
   }
 
-  // Anchor 0 of the engine's magma colormap ("floor: near-black") is
-  // (0,0,4) — luma ~0.5. The next anchor up is already luma ~11. A small
-  // threshold well below that cleanly separates "baked-in floor color"
-  // from "there's actually something here", without being thrown off by
-  // PNG compression noise.
-  const SIGNAL_LUMA_THRESHOLD = 6;
-
-  // Scans a loaded tile image for the topmost row containing real signal
-  // (as opposed to floor-color padding) and folds it into signalTopRowRef
-  // so cropping never hides a row that's known to hold content. Runs once
-  // per tile, off the main draw path. Cheap: tiles are small, and columns
-  // are sampled rather than scanned exhaustively.
-  function analyzeTileSignalTop(img) {
-    try {
-      const w = img.naturalWidth, h = img.naturalHeight;
-      if (!w || !h) return;
-      if (!analysisCanvasRef.current) analysisCanvasRef.current = document.createElement('canvas');
-      const off = analysisCanvasRef.current;
-      off.width = w; off.height = h;
-      const octx = off.getContext('2d', { willReadFrequently: true });
-      octx.drawImage(img, 0, 0);
-      const { data } = octx.getImageData(0, 0, w, h);
-      const colStep = Math.max(1, Math.floor(w / 64)); // sample ~64 columns
-      for (let y = 0; y < h; y++) {
-        const rowBase = y * w * 4;
-        for (let x = 0; x < w; x += colStep) {
-          const o = rowBase + x * 4;
-          const luma = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
-          if (luma > SIGNAL_LUMA_THRESHOLD) {
-            signalTopRowRef.current = signalTopRowRef.current == null
-              ? y : Math.min(signalTopRowRef.current, y);
-            scheduleDraw();
-            return;
-          }
-        }
-      }
-    } catch (err) {
-      // Cross-origin tiles without CORS headers taint the canvas and throw
-      // on getImageData — in that case just skip the safety analysis
-      // rather than breaking tile rendering. The manual crop slider still
-      // works, it just loses its safety cap.
-    }
-  }
-
   function getTile(L, t) {
     const key = curWindowRef.current.fftSize + '/' + L + '/' + t;
     let img = tileCacheRef.current.get(key);
     if (img) return img;
     img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => { scheduleDraw(); analyzeTileSignalTop(img); };
+    img.onload = () => scheduleDraw();
     img.onerror = () => {};
     img.src = tilePath(L, t);
     tileCacheRef.current.set(key, img);
@@ -270,6 +310,17 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     if (drawPendingRef.current) return;
     drawPendingRef.current = true;
     requestAnimationFrame(() => { drawPendingRef.current = false; draw(); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // rAF-throttled version of notifyVisibleWindow(), for call sites (pointer
+  // drag) that fire many times per frame — without this, telling the
+  // annotation overlay to re-render on every raw pointermove event would
+  // mean a full React re-render tens of times a second while panning.
+  const scheduleNotify = useCallback(() => {
+    if (notifyPendingRef.current) return;
+    notifyPendingRef.current = true;
+    requestAnimationFrame(() => { notifyPendingRef.current = false; notifyVisibleWindow(); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -297,7 +348,7 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       const view = viewRef.current;
       const visibleSec = view.secPerPx * cssW;
       view.startSec = t - visibleSec / 2;
-      clampView();
+      clampHorizontal();
       scheduleDraw();
       notifyVisibleWindow();
     },
@@ -323,14 +374,21 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     const numCols = lvl.numColumns;
     const numTiles = lvl.numTiles;
 
-    const horizScale = spc / view.secPerPx;
-    ctx.imageSmoothingEnabled = horizScale > 1.5;
+    ctx.imageSmoothingEnabled = true;
 
     const colToX = (col) => (col * spc - view.startSec) / view.secPerPx;
     const cStart = view.startSec / spc;
     const cEnd = (view.startSec + cssW * view.secPerPx) / spc;
     const tStart = Math.max(0, Math.floor(cStart / tileW));
     const tEnd = Math.min(numTiles - 1, Math.floor((cEnd - 1e-9) / tileW));
+
+    // Vertical (frequency) window -> source rows within each tile. Row 0 is
+    // the top (highest freq); vTop (closer to 1) is therefore the smaller
+    // row index. See vToRow's comment for why this mapping is scale-agnostic.
+    const rowAtTop = vToRow(view.vTop, tileH);
+    const rowAtBot = vToRow(view.vBot, tileH);
+    const sy = Math.max(0, rowAtTop);
+    const sh = Math.max(1e-6, rowAtBot - rowAtTop);
 
     for (let t = tStart; t <= tEnd; t++) {
       const colLeft = t * tileW;
@@ -341,23 +399,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       if (w <= 0) continue;
       const img = getTile(L, t);
       if (img.complete && img.naturalWidth > 0) {
-        // Rows are top=high-freq .. bottom=low-freq (see buildRowToBin in
-        // the engine). Cropping the top `cropTop` fraction skips rows that
-        // are baked-in near-black (below the noise floor for this file) and
-        // stretches the remaining, actually-informative band to fill the
-        // full view height instead of leaving a dead black band on screen.
-        //
-        // The requested crop is capped by signalTopRowRef — the highest
-        // row any loaded tile has been observed to actually contain signal
-        // in — so a rare loud transient that pokes up into otherwise-empty
-        // high frequencies never gets cropped away just because most of
-        // the file is quiet up there.
-        const requestedRows = cropTopRef.current * tileH;
-        const safeMaxRows = signalTopRowRef.current != null
-          ? Math.max(0, signalTopRowRef.current - 2) // small margin above the loudest known row
-          : 0; // nothing analyzed yet — don't crop until we know it's safe to
-        const sy = Math.min(requestedRows, safeMaxRows);
-        const sh = tileH - sy;
         ctx.drawImage(img, 0, sy, wActual, sh, x0, 0, w, cssH);
       }
     }
@@ -378,11 +419,18 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   }
 
   // -------------------------------------------------------------------
-  // Pointer interaction: drag = pan, small movement on release = seek click
+  // Pointer interaction: drag = pan (time + freq), small movement on
+  // release = seek click. Shift+wheel = frequency zoom (mirrors the
+  // sidebar's scroll-to-zoom, for convenience without leaving the canvas).
   // -------------------------------------------------------------------
   const handlePointerDown = useCallback((e) => {
     if (e.button !== 0) return;
-    dragRef.current = { startX: e.clientX, startSec: viewRef.current.startSec, moved: false };
+    dragRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      startSec: viewRef.current.startSec,
+      startVTop: viewRef.current.vTop, startVBot: viewRef.current.vBot,
+      moved: false,
+    };
     e.currentTarget.setPointerCapture(e.pointerId);
   }, []);
 
@@ -390,11 +438,20 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     const drag = dragRef.current;
     if (!drag) return;
     const dx = e.clientX - drag.startX;
-    if (Math.abs(dx) > CLICK_DRAG_THRESHOLD) drag.moved = true;
-    viewRef.current.startSec = drag.startSec - dx * viewRef.current.secPerPx;
+    const dy = e.clientY - drag.startY;
+    if (Math.abs(dx) > CLICK_DRAG_THRESHOLD || Math.abs(dy) > CLICK_DRAG_THRESHOLD) drag.moved = true;
+    const view = viewRef.current;
+    view.startSec = drag.startSec - dx * view.secPerPx;
+    const { cssH } = sizeRef.current;
+    const span = drag.startVTop - drag.startVBot;
+    const dv = (dy / Math.max(1, cssH)) * span;
+    view.vTop = drag.startVTop + dv;
+    view.vBot = drag.startVBot + dv;
     clampView();
     scheduleDraw();
-  }, [scheduleDraw]);
+    scheduleNotify();
+    setVTick(t => t + 1);
+  }, [scheduleDraw, scheduleNotify]);
 
   const handlePointerUp = useCallback((e) => {
     const drag = dragRef.current;
@@ -413,41 +470,153 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     if (!manifestRef.current) return;
     e.preventDefault();
     const rect = containerRef.current.getBoundingClientRect();
-    const anchorX = e.clientX - rect.left;
     let dy = e.deltaY;
     if (e.deltaMode === 1) dy *= 16;
     else if (e.deltaMode === 2) dy *= sizeRef.current.cssH;
     const step = Math.min(Math.abs(dy) * WHEEL_SENS, WHEEL_CAP);
     const factor = dy > 0 ? 1 + step : 1 / (1 + step);
-    zoomTime(factor, anchorX);
+
+    if (e.shiftKey) {
+      const anchorFrac = 1 - clamp((e.clientY - rect.top) / sizeRef.current.cssH, 0, 1);
+      zoomFreq(factor, anchorFrac);
+    } else {
+      const anchorX = e.clientX - rect.left;
+      zoomTime(factor, anchorX);
+    }
     scheduleDraw();
     notifyVisibleWindow();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleDraw]);
 
+  // -------------------------------------------------------------------
+  // Frequency-zoom sidebar: two draggable handles (top/bottom of the
+  // visible band) plus scroll-to-zoom, per the right-side track.
+  // -------------------------------------------------------------------
+  const sidebarRef = useRef(null);
+  const sidebarDragRef = useRef(null); // { which: 'top'|'bot'|'pan', ... }
+
+  function sidebarPointerMove(e) {
+    const drag = sidebarDragRef.current;
+    if (!drag || !sidebarRef.current) return;
+    const rect = sidebarRef.current.getBoundingClientRect();
+    const dyFrac = -(e.clientY - drag.startY) / Math.max(1, rect.height); // up = increase v
+    const view = viewRef.current;
+    if (drag.which === 'pan') {
+      const span = drag.startVTop - drag.startVBot;
+      view.vTop = drag.startVTop + dyFrac * span;
+      view.vBot = drag.startVBot + dyFrac * span;
+    } else if (drag.which === 'top') {
+      view.vTop = clamp(drag.startVTop + dyFrac, view.vBot + MIN_VSPAN, 1);
+    } else if (drag.which === 'bot') {
+      view.vBot = clamp(drag.startVBot + dyFrac, 0, view.vTop - MIN_VSPAN);
+    }
+    clampVertical();
+    scheduleDraw();
+    scheduleNotify();
+    setVTick(t => t + 1);
+  }
+
+  function sidebarPointerUp() {
+    sidebarDragRef.current = null;
+    window.removeEventListener('pointermove', sidebarPointerMove);
+    window.removeEventListener('pointerup', sidebarPointerUp);
+    notifyVisibleWindow();
+  }
+
+  const sidebarHandlePointerDown = useCallback((which) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    sidebarDragRef.current = { which, startY: e.clientY, startVTop: viewRef.current.vTop, startVBot: viewRef.current.vBot };
+    window.addEventListener('pointermove', sidebarPointerMove);
+    window.addEventListener('pointerup', sidebarPointerUp);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const sidebarTrackPointerDown = useCallback((e) => {
+    // Click/drag on the track background (not a handle) pans the band.
+    e.preventDefault();
+    sidebarDragRef.current = { which: 'pan', startY: e.clientY, startVTop: viewRef.current.vTop, startVBot: viewRef.current.vBot };
+    window.addEventListener('pointermove', sidebarPointerMove);
+    window.addEventListener('pointerup', sidebarPointerUp);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSidebarWheel = useCallback((e) => {
+    if (!manifestRef.current) return;
+    e.preventDefault();
+    const rect = sidebarRef.current.getBoundingClientRect();
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16;
+    else if (e.deltaMode === 2) dy *= rect.height;
+    const step = Math.min(Math.abs(dy) * WHEEL_SENS, WHEEL_CAP);
+    const factor = dy > 0 ? 1 + step : 1 / (1 + step);
+    const anchorFrac = 1 - clamp((e.clientY - rect.top) / rect.height, 0, 1);
+    zoomFreq(factor, anchorFrac);
+    scheduleDraw();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const haveManifest = status === 'ready' && !!manifestRef.current;
+  const view = viewRef.current;
+  // Handle positions as % from the top of the track (top = 1 - vTop, since vTop=1 is the top).
+  const topPct = haveManifest ? (1 - view.vTop) * 100 : 0;
+  const botPct = haveManifest ? (1 - view.vBot) * 100 : 100;
+  void vTick; // referenced only to force a re-render when vTick changes
+
   return (
-    <div
-      ref={containerRef}
-      className="tile-spec-viewer"
-      style={{ height }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onWheel={handleWheel}
-    >
-      <canvas ref={canvasRef} />
-      {status === 'loading' && (
-        <div className="tile-spec-viewer-status">Generating spectrogram tiles…</div>
-      )}
-      {status === 'error' && (
-        <div className="tile-spec-viewer-status tile-spec-viewer-status--error">
-          Could not load spectrogram tiles.
-        </div>
-      )}
+    <div className="tile-spec-viewer-row" style={{ height }}>
+      <div
+        ref={containerRef}
+        className="tile-spec-viewer"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onWheel={handleWheel}
+      >
+        <canvas ref={canvasRef} />
+        {status === 'loading' && (
+          <div className="tile-spec-viewer-status">Generating spectrogram tiles…</div>
+        )}
+        {status === 'error' && (
+          <div className="tile-spec-viewer-status tile-spec-viewer-status--error">
+            Could not load spectrogram tiles.
+          </div>
+        )}
+      </div>
+
+      <div
+        ref={sidebarRef}
+        className="freq-zoom-sidebar"
+        style={{ width: FREQ_SIDEBAR_WIDTH }}
+        onWheel={handleSidebarWheel}
+        onPointerDown={sidebarTrackPointerDown}
+        title="Drag to pan, scroll to zoom the frequency range"
+      >
+        {haveManifest && (
+          <>
+            <div className="freq-zoom-band" style={{ top: `${topPct}%`, bottom: `${100 - botPct}%` }} />
+            <div className="freq-zoom-label freq-zoom-label--top" style={{ top: `${topPct}%` }}>
+              {fmtFreq(vToFreq(view.vTop))}
+            </div>
+            <div className="freq-zoom-label freq-zoom-label--bot" style={{ top: `${botPct}%` }}>
+              {fmtFreq(vToFreq(view.vBot))}
+            </div>
+            <div
+              className="freq-zoom-handle freq-zoom-handle--top"
+              style={{ top: `${topPct}%` }}
+              onPointerDown={sidebarHandlePointerDown('top')}
+            />
+            <div
+              className="freq-zoom-handle freq-zoom-handle--bot"
+              style={{ top: `${botPct}%` }}
+              onPointerDown={sidebarHandlePointerDown('bot')}
+            />
+          </>
+        )}
+      </div>
     </div>
   );
 });
 
-function clamp(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
-
+export { FREQ_SIDEBAR_WIDTH };
 export default TileSpectrogramViewer;

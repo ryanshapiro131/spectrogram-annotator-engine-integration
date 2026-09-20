@@ -1,6 +1,16 @@
+/* Row = canvas (flex: 1) + frequency-zoom sidebar (fixed width). The
+   SpectrogramOverlay sibling in App.jsx is offset by the sidebar's width
+   via a CSS var (see App.css) so its coordinates keep matching the canvas. */
+.tile-spec-viewer-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+
 .tile-spec-viewer {
   position: relative;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   background: #000;
   cursor: grab;
@@ -27,4 +37,60 @@
 }
 .tile-spec-viewer-status--error {
   color: #ff8080;
+}
+
+/* ── Frequency-zoom sidebar ── */
+.freq-zoom-sidebar {
+  position: relative;
+  flex: 0 0 auto;
+  background: var(--bg-panel, #14181f);
+  border-left: 1px solid var(--border, #2a2f3a);
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.freq-zoom-band {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  background: rgba(120, 170, 255, 0.16);
+  border-top: 2px solid rgba(150, 190, 255, 0.65);
+  border-bottom: 2px solid rgba(150, 190, 255, 0.65);
+  pointer-events: none;
+}
+
+.freq-zoom-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9px;
+  font-family: var(--mono, monospace);
+  color: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+  transform: translateY(-100%);
+  white-space: nowrap;
+}
+.freq-zoom-label--bot {
+  transform: translateY(2px);
+}
+
+.freq-zoom-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10px;
+  margin-top: -5px;
+  cursor: ns-resize;
+}
+.freq-zoom-handle::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 4px;
+  height: 2px;
+  background: rgba(150, 190, 255, 0.9);
+  border-radius: 1px;
 }

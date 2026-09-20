@@ -18,7 +18,7 @@ Key properties:
 
 Requires the spectrogram-engine binary to be built. Point
 SPECTROGRAM_ENGINE_BIN at it, e.g.:
-    export SPECTROGRAM_ENGINE_BIN=C:\Users\bensh\OneDrive\Documents\bb-annotation\spectrogram-annotator-engine-integration\SpectrogramEngine-main\build\Release\spectrogram-engine.exe
+    export SPECTROGRAM_ENGINE_BIN="C:\Users\bensh\OneDrive\Documents\bb-annotation\spectrogram-annotator-engine-integration\SpectrogramEngine-main\build\Release\spectrogram-engine.exe"
 Usage:
     py -m uvicorn server:app --reload --port 8000
 """

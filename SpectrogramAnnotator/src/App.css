@@ -321,8 +321,17 @@
 
 /* ── Tile spectrogram viewer + transport ── */
 .tile-viewer-wrapper {
-  position: relative;
   padding: 14px 16px 0;
+}
+
+/* Positioning context for TileSpectrogramViewer + SpectrogramOverlay. The
+   overlay is absolutely positioned (top:0/left:0) to line up with the
+   canvas underneath — it must have NO padding of its own, or the overlay's
+   origin (padding box) and the canvas's in-flow origin (content box, inset
+   by the padding) drift apart, offsetting the annotation boxes. Keep the
+   14px/16px spacing on .tile-viewer-wrapper (an ancestor) instead. */
+.tile-viewer-stack {
+  position: relative;
 }
 
 .tile-viewer-status-banner {

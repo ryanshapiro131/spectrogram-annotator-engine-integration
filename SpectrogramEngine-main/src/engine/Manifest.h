@@ -23,6 +23,16 @@ struct WindowInfo {
     double secondsPerColumn = 0.0;  // level-0 native = hopSize / sampleRate
     std::vector<LevelInfo> levels;
     std::string diagnosticsJson;    // optional; embedded as this window's "diagnostics"
+
+    // Real signal-content frequency bounds for this window, found by scanning
+    // every computed STFT column for bins above a noise-floor threshold
+    // (see StreamingEngine.cpp / TilePyramid.cpp). Unlike minFrequencyHz/
+    // maxFrequencyHz (the theoretical 0..Nyquist axis range), these describe
+    // where this file's actual content lives, so a viewer can crop dead
+    // (near-black) rows instead of showing empty space. Defaults to the full
+    // theoretical range (filled in by the writer) when not computed.
+    double contentMinFrequencyHz = -1.0;  // -1 sentinel = "not computed"
+    double contentMaxFrequencyHz = -1.0;
 };
 
 // The whole manifest (schema v2). Global fields once, plus one entry per window

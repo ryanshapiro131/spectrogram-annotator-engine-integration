@@ -70,6 +70,15 @@
   flex-shrink: 0;
 }
 
+.layer-visible-checkbox {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--accent, #4a9eff);
+}
+
 .layer-name { font-size: 12px; font-weight: 500; }
 
 .layer-name-input {
@@ -248,6 +257,35 @@
   z-index: 10;
 }
 
+/* ── Per-layer group within the combined list ── */
+.ann-layer-group {
+  display: flex;
+  flex-direction: column;
+}
+.ann-layer-group + .ann-layer-group {
+  border-top: 1px solid var(--border);
+}
+
+.ann-layer-group--active .ann-list-header {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.ann-layer-header-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.ann-empty--compact {
+  padding: 14px 20px;
+  text-align: left;
+}
+
 .ann-count {
   font-size: 11px;
   color: var(--text-muted);
@@ -332,6 +370,16 @@
   flex: 1;
   color: var(--text);
   font-weight: 500;
+}
+
+.ann-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ann-duration {

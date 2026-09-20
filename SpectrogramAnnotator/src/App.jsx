@@ -12,7 +12,7 @@ import './App.css';
 
 function App() {
   const [spectrogramSettings, setSpectrogramSettings] = useState({
-    specHeight: 220,
+    specHeight: 300,
     navHeight:  60,
     // n_fft / hop_length / n_mels / top_db / colormap used to be live client
     // controls. The spectrogram is now generated once by spectrogram-engine
@@ -20,9 +20,10 @@ function App() {
     // settings baked into the tile pyramid, not runtime ones — see the
     // engine's --db-min/--db-max/--freq-scale CLI flags if you want to make
     // them configurable again.
-    // freqCropTop IS a runtime/client-side setting (unlike the above) — it
-    // just crops dead rows out of the view, no re-generation needed.
-    freqCropTop: 0,
+    // Frequency crop/zoom used to be a manual "Scale" slider here; it's now
+    // automatic (opens fit to the engine's detected signal content) plus the
+    // TileSpectrogramViewer's own right-side sidebar for manual vertical
+    // zoom/pan, so there's nothing to store in settings for it anymore.
   });
 
   const chunker      = useAudioChunker(spectrogramSettings);
@@ -30,9 +31,24 @@ function App() {
   const tiles         = useTileViewer(chunker.fileId);
   const tileViewerRef  = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // Bumped by TileSpectrogramViewer's onVisibleWindowChange whenever the
+  // spectrogram is panned/zoomed. SpectrogramOverlay computes annotation box
+  // positions from tileViewerRef.getVisibleWindow() at render time, but
+  // nothing else makes it re-render when that window changes — without this
+  // tick the boxes would stay frozen at whatever window was visible on the
+  // overlay's last unrelated render, instead of tracking their timestamps.
+  const [viewTick, setViewTick]   = useState(0);
 
+  // Each entry here IS a "label" (the user's mental model: a named,
+  // colored annotation type like "chirp" or "engine noise") — despite the
+  // `layer`-flavored names left over from when this only had generic
+  // "Layer 1/2" tabs. `visible` controls whether this label's colored boxes
+  // are drawn on the spectrogram (see SpectrogramOverlay); annotations no
+  // longer carry their own free-text label — the layer/label they live in
+  // *is* their label now, picked via SpectrogramOverlay's label picker
+  // instead of typed per-annotation.
   const [annotationLayers, setAnnotationLayers] = useState([
-    { id: 'layer-1', title: 'Layer 1', color: '#1a6b8a', annotations: [], height: 32 },
+    { id: 'layer-1', title: 'Layer 1', color: '#1a6b8a', annotations: [], height: 32, visible: true },
   ]);
   const [activeLayerId, setActiveLayerId] = useState('layer-1');
   const [showExport, setShowExport]       = useState(false);
@@ -49,14 +65,41 @@ function App() {
   // one currently active; cleared once applied.
   const pendingSeekRef                    = useRef(null);
 
-  // Annotation CRUD
-  const addAnnotation = useCallback((annotation) => {
+  // Annotation CRUD. `labelId` lets the caller (SpectrogramOverlay's label
+  // picker) target ANY existing label, not just whichever tab is active —
+  // that's what lets a new annotation reuse a past label's color.
+  const addAnnotation = useCallback((labelId, annotation) => {
     setAnnotationLayers(prev => prev.map(layer =>
-      layer.id === activeLayerId
-        ? { ...layer, annotations: [...layer.annotations, { ...annotation, id: `ann-${Date.now()}` }] }
+      layer.id === labelId
+        // Name defaults to the label's own title, but the caller may
+        // override it (e.g. a future bulk-import path) since it spreads
+        // after the default.
+        ? { ...layer, annotations: [...layer.annotations, { name: layer.title, ...annotation, id: `ann-${Date.now()}` }] }
         : layer
     ));
-  }, [activeLayerId]);
+  }, []);
+
+  // Resolves a typed label name to an existing label's id (case-insensitive
+  // match) or creates a new one, returning its id either way. Used by
+  // SpectrogramOverlay's label picker so picking/typing a name is all one
+  // step regardless of whether that label already exists.
+  const resolveOrCreateLabel = useCallback((name) => {
+    const trimmed = name.trim();
+    const existing = annotationLayers.find(l => l.title.toLowerCase() === trimmed.toLowerCase());
+    if (existing) return existing.id;
+    const id = `layer-${layerIdCounter.current++}`;
+    const colors = ['#1a6b8a', '#2d7a4f', '#7a4f2d', '#4f2d7a', '#7a2d4f'];
+    const color = colors[annotationLayers.length % colors.length];
+    setAnnotationLayers(prev => [
+      ...prev,
+      { id, title: trimmed, color, annotations: [], height: 32, visible: true }
+    ]);
+    return id;
+  }, [annotationLayers]);
+
+  const toggleLayerVisible = useCallback((layerId) => {
+    setAnnotationLayers(prev => prev.map(l => l.id === layerId ? { ...l, visible: l.visible === false ? true : false } : l));
+  }, []);
 
   const updateAnnotation = useCallback((layerId, annId, changes) => {
     setAnnotationLayers(prev => prev.map(layer =>
@@ -79,7 +122,7 @@ function App() {
     const colors = ['#1a6b8a', '#2d7a4f', '#7a4f2d', '#4f2d7a', '#7a2d4f'];
     setAnnotationLayers(prev => [
       ...prev,
-      { id, title: `Layer ${prev.length + 1}`, color: colors[prev.length % colors.length], annotations: [], height: 32 }
+      { id, title: `Layer ${prev.length + 1}`, color: colors[prev.length % colors.length], annotations: [], height: 32, visible: true }
     ]);
     setActiveLayerId(id);
   }, []);
@@ -99,7 +142,7 @@ function App() {
   }, []);
 
   const handleClear = useCallback(() => {
-    setAnnotationLayers([{ id: 'layer-1', title: 'Layer 1', color: '#1a6b8a', annotations: [], height: 32 }]);
+    setAnnotationLayers([{ id: 'layer-1', title: 'Layer 1', color: '#1a6b8a', annotations: [], height: 32, visible: true }]);
     setActiveLayerId('layer-1');
     layerIdCounter.current = 2;
   }, []);
@@ -315,22 +358,12 @@ function App() {
                   </button>
                 </div>
                 <div className="settings-row">
-                  <label>Height
+                  <label>Window Size
                     <input type="range" min={120} max={400} step={20}
                       value={spectrogramSettings.specHeight}
                       onChange={e => setSpectrogramSettings(s => ({ ...s, specHeight: +e.target.value }))} />
                     <span>{spectrogramSettings.specHeight}px</span>
                   </label>
-                  <label title="Crops empty/near-silent high-frequency rows out of view and stretches the remaining band to fill the height — doesn't touch the underlying tiles.">
-                    Crop empty highs
-                    <input type="range" min={0} max={0.9} step={0.05}
-                      value={spectrogramSettings.freqCropTop}
-                      onChange={e => setSpectrogramSettings(s => ({ ...s, freqCropTop: +e.target.value }))} />
-                    <span>{Math.round(spectrogramSettings.freqCropTop * 100)}%</span>
-                  </label>
-                  <span className="settings-row-note" title="Colormap and dB range are now baked in when the tile pyramid is generated (spectrogram-engine --db-min/--db-max), not adjustable per view.">
-                    colormap/dB range: set at generation time
-                  </span>
                 </div>
               </div>
 
@@ -344,6 +377,8 @@ function App() {
                   fileDuration={chunker.fileDuration}
                   chunkDuration={chunker.CHUNK_DURATION}
                   onSeek={handleSeek}
+                  getVisibleWindow={() => tileViewerRef.current?.getVisibleWindow() || { start: 0, end: chunker.fileDuration }}
+                  viewTick={viewTick}
                 />
               ) : (
                 <ChunkTimeline
@@ -366,24 +401,27 @@ function App() {
                   </div>
                 )}
                 {tiles.status === 'ready' && (
-                  <TileSpectrogramViewer
-                    ref={tileViewerRef}
-                    manifestUrl={tiles.manifestUrl}
-                    tileBaseUrl={tiles.tileBaseUrl}
-                    height={spectrogramSettings.specHeight}
-                    freqCropTop={spectrogramSettings.freqCropTop}
-                    onSeek={handleSeek}
-                  />
-                )}
-                {tiles.status === 'ready' && (
-                  <SpectrogramOverlay
-                    duration={chunker.fileDuration}
-                    specHeight={spectrogramSettings.specHeight}
-                    activeLayer={annotationLayers.find(l => l.id === activeLayerId)}
-                    onAddAnnotation={addAnnotation}
-                    enabled={annotateMode}
-                    getVisibleWindow={() => tileViewerRef.current?.getVisibleWindow() || { start: 0, end: chunker.fileDuration }}
-                  />
+                  <div className="tile-viewer-stack">
+                    <TileSpectrogramViewer
+                      ref={tileViewerRef}
+                      manifestUrl={tiles.manifestUrl}
+                      tileBaseUrl={tiles.tileBaseUrl}
+                      height={spectrogramSettings.specHeight}
+                      onSeek={handleSeek}
+                      onVisibleWindowChange={() => setViewTick(t => t + 1)}
+                    />
+                    <SpectrogramOverlay
+                      duration={chunker.fileDuration}
+                      specHeight={spectrogramSettings.specHeight}
+                      labels={annotationLayers}
+                      activeLabelId={activeLayerId}
+                      onAddAnnotation={addAnnotation}
+                      onResolveOrCreateLabel={resolveOrCreateLabel}
+                      enabled={annotateMode}
+                      getVisibleWindow={() => tileViewerRef.current?.getVisibleWindow() || { start: 0, end: chunker.fileDuration }}
+                      viewTick={viewTick}
+                    />
+                  </div>
                 )}
 
                 <div className="transport-bar">
@@ -435,12 +473,11 @@ function App() {
             <AnnotationPanel
               layers={annotationLayers}
               activeLayerId={activeLayerId}
-              chunkStartTime={chunker.chunkStartTime}
               onSelectLayer={setActiveLayerId}
               onAddLayer={addLayer}
               onRemoveLayer={removeLayer}
               onUpdateLayer={updateLayer}
-              onAddAnnotation={addAnnotation}
+              onToggleVisible={toggleLayerVisible}
               onUpdateAnnotation={updateAnnotation}
               onDeleteAnnotation={deleteAnnotation}
               onSeek={handleSeek}

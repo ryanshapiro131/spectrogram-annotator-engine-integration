@@ -2,7 +2,11 @@
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
+  /* Stop short of TileSpectrogramViewer's frequency-zoom sidebar (46px,
+     kept in sync with FREQ_SIDEBAR_WIDTH in TileSpectrogramViewer.jsx) so
+     this overlay's width always matches the canvas underneath it, not the
+     sidebar next to it. */
+  right: 46px;
   /* Pass through to the underlying spectrogram (native click-to-seek, zoom,
      etc.) unless annotation mode is explicitly enabled. */
   pointer-events: none;
@@ -202,52 +206,74 @@
   cursor: not-allowed;
 }
 
-/* Existing annotations list */
-.spec-popup-existing {
+/* Persistent annotation boxes — one per annotation of every visible label,
+   full height, translucent, colored to match that label. */
+.spec-ann-box {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid;
+  border-right: 2px solid;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Label picker: existing labels (color dot + name + count), filterable by
+   the text typed into .spec-popup-input above. */
+.spec-popup-labels {
   border-top: 1px solid var(--border);
   padding: 8px 12px 10px;
-  max-height: 140px;
+  max-height: 160px;
   overflow-y: auto;
-}
-
-.spec-popup-existing-label {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 6px;
-}
-
-.spec-popup-existing-list {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.spec-popup-existing-item {
+.spec-popup-labels-empty {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.spec-popup-label-option {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 6px;
-  border-radius: 3px;
+  padding: 5px 8px;
+  border-radius: 4px;
   background: var(--bg-card);
   border: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--ui);
+  width: 100%;
+}
+.spec-popup-label-option:hover {
+  border-color: var(--accent);
+  background: var(--bg-panel);
 }
 
-.spec-popup-existing-time {
-  font-size: 10px;
-  font-family: var(--mono);
-  color: var(--accent);
-  white-space: nowrap;
+.spec-popup-label-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   flex-shrink: 0;
 }
 
-.spec-popup-existing-name {
+.spec-popup-label-name {
+  flex: 1;
   font-size: 11px;
   color: var(--text-secondary);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.spec-popup-label-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
 }

@@ -14,14 +14,19 @@ export default function ExportModal({ layers, audioFileName, onClose }) {
       title: l.title,
       color: l.color,
       height: l.height,
-      annotations: l.annotations.map(a => ({ start: a.start, end: a.end, label: a.label }))
+      // Each annotation is denormalized with its label's own name/title —
+      // annotations no longer carry separate free-text labels themselves
+      // (the label they live under IS their label now), but downstream
+      // consumers (e.g. SpectrogramPlayer, the NDSU pipeline) still expect
+      // a `label` on every annotation, so keep that field populated.
+      annotations: l.annotations.map(a => ({ start: a.start, end: a.end, label: l.title }))
     }))
   };
 
   const playerFormat = layers
     .filter(l => l.annotations.length > 0)
     .map(layer => ({
-      data: layer.annotations.slice().sort((a, b) => a.start - b.start).map(a => [a.start, a.end, a.label]),
+      data: layer.annotations.slice().sort((a, b) => a.start - b.start).map(a => [a.start, a.end, layer.title]),
       title: layer.title + ':',
       height: layer.height,
       strokeWidth: 1,

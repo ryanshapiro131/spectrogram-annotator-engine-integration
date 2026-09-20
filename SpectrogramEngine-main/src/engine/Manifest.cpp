@@ -48,6 +48,13 @@ bool writeManifestV2(const ManifestV2& m, const std::string& path, std::string& 
         jw["minFrequencyHz"] = isLog ? hzPerBin : 0.0;        // per-window on a log axis
         jw["maxFrequencyHz"] = m.sampleRate / 2.0;
 
+        // Real signal-content bounds (see WindowInfo comment). Fall back to
+        // the theoretical full range if the caller didn't compute them.
+        jw["contentMinFrequencyHz"] =
+            w.contentMinFrequencyHz >= 0.0 ? w.contentMinFrequencyHz : jw["minFrequencyHz"].get<double>();
+        jw["contentMaxFrequencyHz"] =
+            w.contentMaxFrequencyHz >= 0.0 ? w.contentMaxFrequencyHz : jw["maxFrequencyHz"].get<double>();
+
         json jlevels = json::array();
         for (const auto& L : w.levels) {
             jlevels.push_back({

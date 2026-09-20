@@ -38,6 +38,8 @@ export default function WaveformNav({
   totalChunks, currentChunk, sxxStatus,
   fileDuration, chunkDuration,
   onSeek,
+  getVisibleWindow, // () => { start, end } — the spectrogram viewer's current pan/zoom window, in absolute seconds
+  viewTick,         // bumped whenever the spectrogram viewer pans/zooms, to re-trigger this draw
 }) {
   const canvasRef   = useRef(null);
   const wrapRef     = useRef(null);
@@ -109,12 +111,16 @@ export default function WaveformNav({
       ctx.globalAlpha = 1;
     }
 
-    // Viewport rectangle for the current chunk
-    if (fileDuration > 0 && chunkDuration > 0) {
-      const cs = currentChunk * chunkDuration;
-      const ce = Math.min(fileDuration, cs + chunkDuration);
-      const x1 = (cs / fileDuration) * width;
-      const x2 = (ce / fileDuration) * width;
+    // Viewport rectangle — tracks the spectrogram viewer's actual pan/zoom
+    // window (start/end at the current zoom level), not the audio chunk
+    // boundaries, so it shrinks/grows and slides as the user zooms/pans the
+    // spectrogram above.
+    if (fileDuration > 0) {
+      const win = typeof getVisibleWindow === 'function'
+        ? getVisibleWindow()
+        : { start: currentChunk * chunkDuration, end: Math.min(fileDuration, (currentChunk + 1) * chunkDuration) };
+      const x1 = (win.start / fileDuration) * width;
+      const x2 = (win.end / fileDuration) * width;
 
       ctx.fillStyle = colors.viewport;
       ctx.globalAlpha = 0.16;
@@ -137,7 +143,8 @@ export default function WaveformNav({
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
-  }, [overview, width, fileDuration, chunkDuration, currentChunk, sxxStatus, hoverTime]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overview, width, fileDuration, chunkDuration, currentChunk, sxxStatus, hoverTime, getVisibleWindow, viewTick]);
 
   useEffect(() => { draw(); }, [draw]);
 

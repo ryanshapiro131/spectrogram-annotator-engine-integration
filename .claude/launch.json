@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "spectrogram-annotator",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start", "--prefix", "SpectrogramAnnotator"],
+      "port": 5173
+    }
+  ]
+}

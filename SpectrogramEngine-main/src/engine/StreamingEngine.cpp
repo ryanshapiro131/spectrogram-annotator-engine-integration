@@ -312,6 +312,21 @@ bool runStreaming(const std::string& inPath, const std::string& outDir,
     PyramidStreamer streamer;
     streamer.init(numLevels, tileWidth, numBins);
 
+    // Real signal-content frequency bounds: track the lowest/highest bin
+    // that any column in the whole file has above a noise-floor threshold.
+    // Threshold sits a bit above the render dB floor so it catches quiet
+    // content but ignores the near-black floor itself.
+    // A bin only counts once it clears the threshold in several columns, not
+    // just one — a single STFT column at the very start/end of the file is a
+    // zero-padded partial window, whose hard edge leaks broadband energy
+    // across every bin. Requiring persistence filters that one-off boundary
+    // artifact out while still catching genuinely brief (few-column) sounds.
+    const float signalThresholdDb = tiling.render.dbMin + 0.2f * (tiling.render.dbMax - tiling.render.dbMin);
+    const int kMinColumnsAboveThreshold = 3;
+    std::vector<uint16_t> aboveCount(numBins, 0);
+    int minSignalBin = numBins;   // sentinel: numBins = "none found yet"
+    int maxSignalBin = -1;        // sentinel: -1 = "none found yet"
+
     // Streaming state.
     std::vector<float> carry;          // mono samples currently buffered
     int64_t bufferStart = 0;           // absolute sample index of carry[0]
@@ -366,7 +381,19 @@ bool runStreaming(const std::string& inPath, const std::string& outDir,
         const auto tPool = Clock::now();
         streamer.jobs = &jobs;
         for (int64_t i = 0; i < blockFrames; ++i) {
-            streamer.emit(0, &blockBuf[static_cast<size_t>(i) * numBins]);
+            const float* col = &blockBuf[static_cast<size_t>(i) * numBins];
+            streamer.emit(0, col);
+            for (int b = 0; b < numBins; ++b) {
+                if (col[b] > signalThresholdDb) {
+                    if (aboveCount[b] < kMinColumnsAboveThreshold) {
+                        ++aboveCount[b];
+                        if (aboveCount[b] == kMinColumnsAboveThreshold) {
+                            if (b < minSignalBin) minSignalBin = b;
+                            if (b > maxSignalBin) maxSignalBin = b;
+                        }
+                    }
+                }
+            }
         }
         stats.poolSeconds += secondsSince(tPool);
 
@@ -448,6 +475,19 @@ bool runStreaming(const std::string& inPath, const std::string& outDir,
     winInfo.numBins = numBins;
     winInfo.secondsPerColumn = spc0;   // level-0 native
     winInfo.levels = std::move(levelInfos);
+
+    // Finalize content frequency bounds. If nothing ever cleared the
+    // threshold (near-silent file), fall back to the full theoretical range
+    // rather than collapsing to an empty/inverted band.
+    if (maxSignalBin >= 0) {
+        winInfo.contentMinFrequencyHz = static_cast<double>(minSignalBin) * hzPerBin;
+        winInfo.contentMaxFrequencyHz =
+            std::min(static_cast<double>(maxSignalBin + 1) * hzPerBin,
+                     static_cast<double>(reader.sampleRate) / 2.0);
+    } else {
+        winInfo.contentMinFrequencyHz = 0.0;
+        winInfo.contentMaxFrequencyHz = static_cast<double>(reader.sampleRate) / 2.0;
+    }
 
     // Optionally serialize this window's diagnostics for embedding in the manifest.
     if (embedDiagnostics) {

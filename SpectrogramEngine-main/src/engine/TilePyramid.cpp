@@ -64,6 +64,40 @@ bool buildTiledPyramid(const DbGrid& grid, const std::string& outDir,
     std::vector<int> rowToBin;
     buildRowToBin(numBins, hzPerBin, params.render.freqScale, rowToBin);
 
+    // Real signal-content frequency bounds (see WindowInfo comment in
+    // Manifest.h) — mirrors the streaming path's per-column scan, but here
+    // the whole grid is already resident so it's a single flat pass.
+    // See StreamingEngine.cpp's matching scan for why persistence (not a
+    // single column) is required — filters the zero-padded boundary window's
+    // broadband leakage out of the detected range.
+    const float signalThresholdDb =
+        params.render.dbMin + 0.2f * (params.render.dbMax - params.render.dbMin);
+    const int kMinColumnsAboveThreshold = 3;
+    std::vector<uint16_t> aboveCount(numBins, 0);
+    int minSignalBin = numBins;
+    int maxSignalBin = -1;
+    for (int64_t c = 0; c < grid.numFrames; ++c) {
+        const float* col = &grid.db[static_cast<size_t>(c) * numBins];
+        for (int b = 0; b < numBins; ++b) {
+            if (col[b] > signalThresholdDb && aboveCount[b] < kMinColumnsAboveThreshold) {
+                ++aboveCount[b];
+                if (aboveCount[b] == kMinColumnsAboveThreshold) {
+                    if (b < minSignalBin) minSignalBin = b;
+                    if (b > maxSignalBin) maxSignalBin = b;
+                }
+            }
+        }
+    }
+    double contentMinFrequencyHz, contentMaxFrequencyHz;
+    if (maxSignalBin >= 0) {
+        contentMinFrequencyHz = static_cast<double>(minSignalBin) * hzPerBin;
+        contentMaxFrequencyHz = std::min(static_cast<double>(maxSignalBin + 1) * hzPerBin,
+                                          static_cast<double>(grid.sampleRate) / 2.0);
+    } else {
+        contentMinFrequencyHz = 0.0;
+        contentMaxFrequencyHz = static_cast<double>(grid.sampleRate) / 2.0;
+    }
+
     // Tiles live under outDir/<windowSubdir>/L{level}/.
     const fs::path tilesRoot = fs::path(outDir) / windowSubdir;
     std::error_code ec;
@@ -139,6 +173,8 @@ bool buildTiledPyramid(const DbGrid& grid, const std::string& outDir,
     winInfo.hopSize = grid.hopSize;
     winInfo.numBins = grid.numBins;
     winInfo.secondsPerColumn = spc0;  // level-0 native
+    winInfo.contentMinFrequencyHz = contentMinFrequencyHz;
+    winInfo.contentMaxFrequencyHz = contentMaxFrequencyHz;
     winInfo.levels.clear();
     winInfo.levels.reserve(result.levels.size());
     for (const auto& L : result.levels) {

@@ -28,25 +28,33 @@ function timeToX(t, width, win) {
 /*
  * SpectrogramOverlay
  *
- * Previously this read its zoom/pan window by sniffing react-audio-
- * spectrogram-player's <svg viewBox> off the DOM (that library didn't expose
- * zoom state via props). Now that the spectrogram is TileSpectrogramViewer —
- * one continuous canvas spanning the whole file, not one instance per
- * 3-minute chunk — it takes the visible window via a plain getVisibleWindow()
- * callback (TileSpectrogramViewer exposes this through a ref), and works in
- * ABSOLUTE file seconds throughout rather than chunk-relative + an offset.
+ * Reads its zoom/pan window via a plain getVisibleWindow() callback
+ * (TileSpectrogramViewer exposes this through a ref) and works in ABSOLUTE
+ * file seconds throughout.
  *
- * Because the viewer now spans the whole file, this overlay also no longer
- * needs to be told which chunk it's "in" — it just filters annotations to
- * whatever's currently visible.
+ * Two responsibilities:
+ *   1. Persistently render every visible label's annotations as colored,
+ *      translucent boxes wherever they fall in the current time window —
+ *      each label's `visible` flag (toggled in AnnotationPanel) controls
+ *      whether its boxes are drawn at all. Boxes span the full height (no
+ *      per-annotation frequency range — see TileSpectrogramViewer comment).
+ *   2. Drive the double-click-to-draw-a-region flow. Once start+end are
+ *      set, instead of a free-text field this shows a label PICKER: existing
+ *      labels (colored swatches, filterable by typing) to reuse, or type a
+ *      new name to create one — so a repeated label always keeps its color.
  */
 export default function SpectrogramOverlay({
   duration,             // total file duration in seconds (fallback window)
   specHeight,           // height of the spectrogram canvas area
-  activeLayer,          // { id, title, color, annotations[] }
-  onAddAnnotation,      // (annotation) => void — stores absolute timestamps
+  labels,               // [{ id, title, color, visible, annotations[] }] — ALL labels
+  activeLabelId,        // id to preselect in the picker
+  onAddAnnotation,      // (labelId, {start,end}) => void — stores absolute timestamps
+  onResolveOrCreateLabel, // (name) => labelId — reuses an existing label or creates one
   enabled,              // whether annotation mode is active (vs. plain navigation)
   getVisibleWindow,     // () => { start, end } in absolute seconds
+  viewTick,             // bumped by the parent on every pan/zoom — forces this
+                         // component to re-render and re-read getVisibleWindow(),
+                         // since that window otherwise lives outside React state.
 }) {
   const overlayRef = useRef(null);
   const inputRef = useRef(null);
@@ -58,14 +66,28 @@ export default function SpectrogramOverlay({
   const [startTime, setStartTime] = useState(null);
   const [endTime, setEndTime] = useState(null);
   const [hoverTime, setHoverTime] = useState(null);
-  const [labelValue, setLabelValue] = useState('');
+  const [labelQuery, setLabelQuery] = useState('');
   const [popupX, setPopupX] = useState(0);
+  // Force a re-render on a resize-only re-measure (box positions depend on
+  // overlayRef's live width, read at render time below).
+  const [, forceTick] = useState(0);
 
   const windowOf = useCallback(() => {
     return typeof getVisibleWindow === 'function'
       ? getVisibleWindow()
       : { start: 0, end: duration || 0 };
   }, [getVisibleWindow, duration]);
+
+  // Re-measure/redraw boxes on container resize (annotation boxes are plain
+  // absolutely-positioned divs, not canvas, so they don't repaint on their
+  // own when the container changes width).
+  useEffect(() => {
+    const el = overlayRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => forceTick(t => t + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Focus input when popup appears
   useEffect(() => {
@@ -100,10 +122,11 @@ export default function SpectrogramOverlay({
       setStartTime(finalStart);
       setEndTime(finalEnd);
       setPopupX(Math.min((timeToX(finalStart, w, win) + timeToX(finalEnd, w, win)) / 2, w - 280));
-      setLabelValue('');
+      const activeLabel = labels.find(l => l.id === activeLabelId);
+      setLabelQuery(activeLabel ? activeLabel.title : '');
       setMode('label');
     }
-  }, [mode, startTime, windowOf]);
+  }, [mode, startTime, windowOf, labels, activeLabelId]);
 
   const handleMouseMove = useCallback((e) => {
     if (mode === 'idle' || mode === 'label') return;
@@ -120,7 +143,7 @@ export default function SpectrogramOverlay({
   const cancel = useCallback(() => {
     setMode('idle');
     setStartTime(null); setEndTime(null);
-    setLabelValue('');
+    setLabelQuery('');
     setHoverTime(null);
   }, []);
 
@@ -130,15 +153,13 @@ export default function SpectrogramOverlay({
     if (!enabled) cancel();
   }, [enabled, cancel]);
 
-  const confirm = useCallback(() => {
-    if (!labelValue.trim()) return;
-    onAddAnnotation({
-      start: startTime,
-      end: endTime,
-      label: labelValue.trim(),
-    });
+  const confirm = useCallback((name) => {
+    const trimmed = (name != null ? name : labelQuery).trim();
+    if (!trimmed) return;
+    const labelId = onResolveOrCreateLabel(trimmed);
+    onAddAnnotation(labelId, { start: startTime, end: endTime });
     cancel();
-  }, [labelValue, startTime, endTime, onAddAnnotation, cancel]);
+  }, [labelQuery, startTime, endTime, onAddAnnotation, onResolveOrCreateLabel, cancel]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter') confirm();
@@ -146,16 +167,41 @@ export default function SpectrogramOverlay({
     e.stopPropagation();
   }, [confirm, cancel]);
 
+  void viewTick; // referenced only to force a re-render when the visible window changes
+
   const width = overlayRef.current?.getBoundingClientRect().width || 0;
   const win = windowOf();
   const startX = startTime !== null ? timeToX(startTime, width, win) : null;
   const endX = endTime !== null ? timeToX(endTime, width, win) : null;
   const hoverX = hoverTime !== null ? timeToX(hoverTime, width, win) : null;
 
-  // Existing annotations currently visible on screen, for this layer
-  const visibleInWindow = (activeLayer?.annotations || [])
-    .filter(a => a.end > win.start && a.start < win.end)
-    .sort((a, b) => a.start - b.start);
+  const activeLabel = labels.find(l => l.id === activeLabelId);
+  const drawColor = activeLabel?.color || '#1a6b8a';
+
+  // Suggestions for the label picker: existing labels whose name contains
+  // the typed text (case-insensitive), most-annotations-first so frequently
+  // used labels surface quickly. Typing a name with no match just means
+  // "create a new label with this name" on confirm.
+  const query = labelQuery.trim().toLowerCase();
+  const suggestions = query
+    ? labels.filter(l => l.title.toLowerCase().includes(query))
+    : labels;
+  const exactMatch = labels.some(l => l.title.toLowerCase() === query);
+
+  // Persistent boxes: every visible label's annotations that fall in the
+  // current time window, full height, translucent, colored per label.
+  const boxes = [];
+  if (width > 0) {
+    for (const label of labels) {
+      if (label.visible === false) continue;
+      for (const a of label.annotations) {
+        if (a.end <= win.start || a.start >= win.end) continue;
+        const x0 = timeToX(Math.max(a.start, win.start), width, win);
+        const x1 = timeToX(Math.min(a.end, win.end), width, win);
+        boxes.push({ key: `${label.id}:${a.id}`, left: x0, width: Math.max(1, x1 - x0), color: label.color, title: a.name || label.title });
+      }
+    }
+  }
 
   return (
     <div
@@ -166,6 +212,16 @@ export default function SpectrogramOverlay({
       onMouseMove={enabled ? handleMouseMove : undefined}
       onMouseLeave={enabled ? handleMouseLeave : undefined}
     >
+      {/* Persistent annotation boxes, every visible label */}
+      {boxes.map(b => (
+        <div
+          key={b.key}
+          className="spec-ann-box"
+          title={b.title}
+          style={{ left: b.left, width: b.width, background: `${b.color}33`, borderColor: b.color }}
+        />
+      ))}
+
       {/* Instruction hint */}
       {enabled && mode === 'idle' && (
         <div className="spec-overlay-hint">Double-click to set start point</div>
@@ -194,15 +250,15 @@ export default function SpectrogramOverlay({
         </div>
       )}
 
-      {/* Selected region shading */}
+      {/* Selected region shading (before a label is chosen) */}
       {startX !== null && endX !== null && (
         <div
           className="spec-region"
           style={{
             left: Math.min(startX, endX),
             width: Math.abs(endX - startX),
-            borderColor: activeLayer?.color || '#1a6b8a',
-            background: `${activeLayer?.color || '#1a6b8a'}22`,
+            borderColor: drawColor,
+            background: `${drawColor}22`,
           }}
         />
       )}
@@ -217,7 +273,7 @@ export default function SpectrogramOverlay({
         </div>
       )}
 
-      {/* Label popup */}
+      {/* Label picker popup */}
       {mode === 'label' && (
         <div
           className="spec-popup"
@@ -225,9 +281,6 @@ export default function SpectrogramOverlay({
           onDoubleClick={e => e.stopPropagation()}
         >
           <div className="spec-popup-header">
-            <span className="spec-popup-layer" style={{ borderColor: activeLayer?.color }}>
-              {activeLayer?.title || 'Layer'}
-            </span>
             <span className="spec-popup-times">
               {secToDisplay(startTime)} → {secToDisplay(endTime)}
               <span className="spec-popup-duration">
@@ -241,34 +294,38 @@ export default function SpectrogramOverlay({
             <input
               ref={inputRef}
               className="spec-popup-input"
-              placeholder="Enter label..."
-              value={labelValue}
-              onChange={e => setLabelValue(e.target.value)}
+              placeholder="Pick or type a label..."
+              value={labelQuery}
+              onChange={e => setLabelQuery(e.target.value)}
               onKeyDown={handleKeyDown}
             />
             <button
               className="spec-popup-confirm"
-              onClick={confirm}
-              disabled={!labelValue.trim()}
+              onClick={() => confirm()}
+              disabled={!labelQuery.trim()}
             >
-              Add
+              {exactMatch ? 'Add' : 'Add (new)'}
             </button>
           </div>
 
-          {visibleInWindow.length > 0 && (
-            <div className="spec-popup-existing">
-              <div className="spec-popup-existing-label">Visible now:</div>
-              <div className="spec-popup-existing-list">
-                {visibleInWindow.map(a => (
-                  <div key={a.id} className="spec-popup-existing-item">
-                    <span className="spec-popup-existing-time">
-                      {secToDisplay(a.start)} → {secToDisplay(a.end)}
-                    </span>
-                    <span className="spec-popup-existing-name">{a.label}</span>
-                  </div>
-                ))}
-              </div>
+          {suggestions.length > 0 && (
+            <div className="spec-popup-labels">
+              {suggestions.map(l => (
+                <button
+                  key={l.id}
+                  className="spec-popup-label-option"
+                  onClick={() => confirm(l.title)}
+                  title={`${l.annotations.length} annotation${l.annotations.length !== 1 ? 's' : ''}`}
+                >
+                  <span className="spec-popup-label-dot" style={{ background: l.color }} />
+                  <span className="spec-popup-label-name">{l.title}</span>
+                  <span className="spec-popup-label-count">{l.annotations.length}</span>
+                </button>
+              ))}
             </div>
+          )}
+          {suggestions.length === 0 && (
+            <div className="spec-popup-labels-empty">No matching label — press Add to create "{labelQuery.trim()}".</div>
           )}
         </div>
       )}

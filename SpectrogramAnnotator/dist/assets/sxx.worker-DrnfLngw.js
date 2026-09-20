@@ -1,0 +1,1 @@
+self.addEventListener("message",async t=>{const{chunkIndex:e,url:a}=t.data;try{const s=await fetch(a);if(!s.ok)throw new Error(`HTTP ${s.status}`);const r=await s.text(),{sxx:n}=JSON.parse(r);self.postMessage({chunkIndex:e,sxx:n})}catch(s){self.postMessage({chunkIndex:e,error:s.message})}});
