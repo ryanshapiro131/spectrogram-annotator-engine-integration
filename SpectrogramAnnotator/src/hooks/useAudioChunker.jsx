@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const CHUNK_DURATION = 180;
-const SERVER         = 'http://localhost:8000';
+const SERVER         = 'http://152.20.12.100:8000';
 // How many chunks' worth of sxx matrices to keep in memory on EACH SIDE of
 // wherever the user currently is. 20 chunks * 3 min = 60 min each way, so
 // up to 2 hours stays instantly navigable around the current position

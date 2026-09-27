@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const SERVER = 'http://localhost:8000';
+const SERVER = 'http://152.20.12.100:8000';
 const POLL_MS = 1000;
 
 /*
