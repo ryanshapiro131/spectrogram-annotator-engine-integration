@@ -22,24 +22,36 @@ function readThemeColors(el) {
   };
 }
 
+// Paints [start, end) second ranges onto a per-pixel state array.
+function paintRanges(states, ranges, value, width, fileDuration) {
+  for (const [start, end] of ranges) {
+    const x0 = Math.max(0, Math.floor((start / fileDuration) * width));
+    const x1 = Math.min(width, Math.ceil((end / fileDuration) * width));
+    for (let x = x0; x < x1; x++) states[x] = Math.max(states[x], value);
+  }
+}
+
+const PENDING = 1;
+const LOADED  = 2;
+
 /**
  * Full-width navigation waveform for the entire audio file.
  *
  * - Draws one RMS bar per overview data point (mirrored around center).
- * - Color reflects whether the chunk covering that time range has a ready
- *   spectrogram (full color), is currently computing (amber), or hasn't
- *   been requested yet (gray) — so the whole file's load state is visible
- *   at a glance.
- * - Click/drag anywhere to seek: dragging moves a viewport rectangle that
- *   represents the current chunk's time range.
+ * - Color mirrors the spectrogram viewer: time ranges whose tiles are loaded
+ *   at the viewer's current zoom level are full color, tiles still in flight
+ *   are amber, and anything the viewer hasn't fetched yet is gray.
+ * - The viewport rectangle is the viewer's visible window; click/drag
+ *   anywhere to seek.
  */
 export default function WaveformNav({
   overview, overviewStatus,
-  totalChunks, currentChunk, sxxStatus,
-  fileDuration, chunkDuration,
+  fileDuration,
   onSeek,
   getVisibleWindow, // () => { start, end } — the spectrogram viewer's current pan/zoom window, in absolute seconds
+  getTileCoverage,  // () => { loaded: [[s,e]...], pending: [[s,e]...] } — from the spectrogram viewer
   viewTick,         // bumped whenever the spectrogram viewer pans/zooms, to re-trigger this draw
+  coverageTick,     // bumped whenever the viewer's tile load state changes
 }) {
   const canvasRef   = useRef(null);
   const wrapRef     = useRef(null);
@@ -83,20 +95,24 @@ export default function WaveformNav({
 
     if (overview && overview.length > 0 && fileDuration > 0) {
       const n = overview.length;
-      for (let x = 0; x < width; x++) {
-        const t   = (x / width) * fileDuration;
+      const w = Math.ceil(width);
+      const states = new Uint8Array(w);
+      const coverage = typeof getTileCoverage === 'function' ? getTileCoverage() : null;
+      if (coverage) {
+        paintRanges(states, coverage.pending, PENDING, w, fileDuration);
+        paintRanges(states, coverage.loaded,  LOADED,  w, fileDuration);
+      }
+
+      for (let x = 0; x < w; x++) {
         const idx = Math.min(n - 1, Math.floor((x / width) * n));
         const amp = overview[idx] || 0;
         const barH = Math.max(1, amp * (HEIGHT - 8));
 
-        const chunkIdx = chunkDuration > 0 ? Math.floor(t / chunkDuration) : 0;
-        const status    = sxxStatus?.[chunkIdx];
-        const color = status === 'ready'   ? colors.loaded
-                    : status === 'pending' ? colors.pending
-                    : colors.unloaded;
-
-        ctx.fillStyle = color;
-        ctx.globalAlpha = status === 'ready' ? 0.9 : status === 'pending' ? 0.75 : 0.45;
+        const state = states[x];
+        ctx.fillStyle = state === LOADED ? colors.loaded
+                      : state === PENDING ? colors.pending
+                      : colors.unloaded;
+        ctx.globalAlpha = state === LOADED ? 0.9 : state === PENDING ? 0.75 : 0.45;
         ctx.fillRect(x, mid - barH / 2, 1, barH);
       }
       ctx.globalAlpha = 1;
@@ -115,10 +131,8 @@ export default function WaveformNav({
     // window (start/end at the current zoom level), not the audio chunk
     // boundaries, so it shrinks/grows and slides as the user zooms/pans the
     // spectrogram above.
-    if (fileDuration > 0) {
-      const win = typeof getVisibleWindow === 'function'
-        ? getVisibleWindow()
-        : { start: currentChunk * chunkDuration, end: Math.min(fileDuration, (currentChunk + 1) * chunkDuration) };
+    if (fileDuration > 0 && typeof getVisibleWindow === 'function') {
+      const win = getVisibleWindow();
       const x1 = (win.start / fileDuration) * width;
       const x2 = (win.end / fileDuration) * width;
 
@@ -144,7 +158,7 @@ export default function WaveformNav({
       ctx.globalAlpha = 1;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overview, width, fileDuration, chunkDuration, currentChunk, sxxStatus, hoverTime, getVisibleWindow, viewTick]);
+  }, [overview, width, fileDuration, hoverTime, getVisibleWindow, getTileCoverage, viewTick, coverageTick]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -180,8 +194,7 @@ export default function WaveformNav({
     setHoverTime(timeFromClientX(e.clientX));
   }, [fileDuration, timeFromClientX]);
 
-  const cs = currentChunk * chunkDuration;
-  const ce = Math.min(fileDuration, cs + chunkDuration);
+  const win = typeof getVisibleWindow === 'function' ? getVisibleWindow() : { start: 0, end: fileDuration };
 
   return (
     <div className="waveform-nav">
@@ -189,9 +202,8 @@ export default function WaveformNav({
         <span>Navigate</span>
         <span className="waveform-nav-info">
           {overviewStatus === 'loading' && <span className="waveform-nav-loading">Loading waveform…</span>}
-          {currentChunk + 1} / {totalChunks}
           <span className="waveform-nav-time">
-            {formatTime(cs)} – {formatTime(ce)}
+            {formatTime(win.start)} – {formatTime(Math.min(fileDuration, win.end))}
           </span>
           {hoverTime != null && (
             <span className="waveform-nav-hover">{formatTime(hoverTime)}</span>

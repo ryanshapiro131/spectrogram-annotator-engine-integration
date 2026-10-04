@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useAudioChunker } from './hooks/useAudioChunker';
-import { useMountQueue } from './hooks/useMountQueue';
 import { useTileViewer } from './hooks/useTileViewer';
 import AnnotationPanel from './components/AnnotationPanel';
 import WaveformNav from './components/WaveformNav';
@@ -26,8 +25,7 @@ function App() {
     // zoom/pan, so there's nothing to store in settings for it anymore.
   });
 
-  const chunker      = useAudioChunker(spectrogramSettings);
-  const mountedChunks = useMountQueue(chunker.currentChunk, chunker.sxxStatus || {});
+  const chunker      = useAudioChunker();
   const tiles         = useTileViewer(chunker.fileId);
   const tileViewerRef  = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -38,6 +36,9 @@ function App() {
   // tick the boxes would stay frozen at whatever window was visible on the
   // overlay's last unrelated render, instead of tracking their timestamps.
   const [viewTick, setViewTick]   = useState(0);
+  // Bumped by TileSpectrogramViewer whenever tiles at its current zoom level
+  // start or finish loading, so WaveformNav can recolor to match.
+  const [coverageTick, setCoverageTick] = useState(0);
 
   // Each entry here IS a "label" (the user's mental model: a named,
   // colored annotation type like "chirp" or "engine noise") — despite the
@@ -371,21 +372,18 @@ function App() {
                 <WaveformNav
                   overview={chunker.overview}
                   overviewStatus={chunker.overviewStatus}
-                  totalChunks={chunker.totalChunks}
-                  currentChunk={chunker.currentChunk}
-                  sxxStatus={chunker.sxxStatus}
                   fileDuration={chunker.fileDuration}
-                  chunkDuration={chunker.CHUNK_DURATION}
                   onSeek={handleSeek}
                   getVisibleWindow={() => tileViewerRef.current?.getVisibleWindow() || { start: 0, end: chunker.fileDuration }}
+                  getTileCoverage={() => tileViewerRef.current?.getTileCoverage() || null}
                   viewTick={viewTick}
+                  coverageTick={coverageTick}
                 />
               ) : (
                 <ChunkTimeline
                   totalChunks={chunker.totalChunks}
                   currentChunk={chunker.currentChunk}
                   chunkUrls={chunker.chunkUrls}
-                  sxxStatus={chunker.sxxStatus}
                   fileDuration={chunker.fileDuration}
                   chunkDuration={chunker.CHUNK_DURATION}
                   onSelectChunk={handleSelectChunk}
@@ -409,6 +407,7 @@ function App() {
                       height={spectrogramSettings.specHeight}
                       onSeek={handleSeek}
                       onVisibleWindowChange={() => setViewTick(t => t + 1)}
+                      onTileCoverageChange={() => setCoverageTick(t => t + 1)}
                     />
                     <SpectrogramOverlay
                       duration={chunker.fileDuration}
@@ -440,11 +439,7 @@ function App() {
 
               <div className="player-wrapper player-wrapper--headless">
                 {Object.entries(chunker.chunkUrls).map(([idxStr, url]) => {
-                  const idx       = Number(idxStr);
-                  const isActive  = idx === chunker.currentChunk;
-                  const isMounted = mountedChunks ? mountedChunks.has(idx) : false;
-
-                  if (!isActive && !isMounted) return null;
+                  const idx = Number(idxStr);
 
                   if (!playerContainerRefs.current[idx]) {
                     playerContainerRefs.current[idx] = React.createRef();

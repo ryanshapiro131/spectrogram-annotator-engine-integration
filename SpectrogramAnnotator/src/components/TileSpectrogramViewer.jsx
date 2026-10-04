@@ -49,9 +49,79 @@ const CONTENT_FIT_PAD = 0.06; // extra headroom (fraction of content span) above
 // with the canvas — see TileSpectrogramViewer.css / SpectrogramOverlay.css.
 const FREQ_SIDEBAR_WIDTH = 46;
 
-function fmtFreq(hz) {
+// Time ruler under the canvas. Major ticks get a label and are picked from
+// TIME_STEPS so labels sit at least AXIS_MIN_LABEL_PX apart; minor ticks
+// subdivide them. Steps go down to 1ms, so labels gain .s/.ss/.sss digits
+// as the user zooms in.
+const AXIS_HEIGHT = 22;
+const AXIS_MIN_LABEL_PX = 84;
+const AXIS_MIN_MINOR_PX = 8;
+const TIME_STEPS = [
+  0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+  1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600,
+];
+
+function pickTimeSteps(secPerPx) {
+  const major = TIME_STEPS.find(st => st / secPerPx >= AXIS_MIN_LABEL_PX) || TIME_STEPS[TIME_STEPS.length - 1];
+  let minor = major;
+  for (const st of TIME_STEPS) {
+    if (st >= major) break;
+    const ratio = major / st;
+    if (st / secPerPx >= AXIS_MIN_MINOR_PX && Math.abs(ratio - Math.round(ratio)) < 1e-6) { minor = st; break; }
+  }
+  return { major, minor };
+}
+
+// h:mm:ss / m:ss, plus as many fractional digits as the major step needs.
+function fmtAxisTime(sec, step, showHours) {
+  const decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : step >= 0.01 ? 2 : 3;
+  const totalMs = Math.round(sec * 1000);
+  const h = Math.floor(totalMs / 3600000);
+  const m = Math.floor((totalMs % 3600000) / 60000);
+  const sWhole = Math.floor((totalMs % 60000) / 1000);
+  const ms = totalMs % 1000;
+  let out = showHours
+    ? `${h}:${String(m).padStart(2, '0')}:${String(sWhole).padStart(2, '0')}`
+    : `${m}:${String(sWhole).padStart(2, '0')}`;
+  if (decimals > 0) out += '.' + String(ms).padStart(3, '0').slice(0, decimals);
+  return out;
+}
+
+// Compact length of the visible window, for the corner under the sidebar.
+function fmtSpan(sec) {
+  if (sec < 1) return `${Math.round(sec * 1000)}ms`;
+  if (sec < 60) return `${sec.toFixed(sec < 10 ? 2 : 1)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m${String(Math.round(sec % 60)).padStart(2, '0')}s`;
+  return `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m`;
+}
+
+// Frequency ruler (right sidebar). Labelled ticks stay at least
+// FREQ_MIN_LABEL_PX apart; the visible band's exact top/bottom frequencies
+// are printed at the ruler's ends, so tick labels too close to an end are
+// skipped. A thin strip on the right edge shows where the visible band sits
+// within the full 0..Nyquist range.
+const FREQ_MIN_LABEL_PX = 28;
+const FREQ_MIN_MINOR_PX = 4;
+const FREQ_EDGE_CLEAR_PX = 14;
+const FREQ_GRIP_PX = 8;
+const FREQ_MINIMAP_W = 3;
+
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
+
+// "850", "1.25k", "12k" — with as many decimals as `step` needs.
+function fmtHz(hz, step) {
   if (!isFinite(hz)) return '—';
-  return hz >= 1000 ? `${(hz / 1000).toFixed(hz >= 10000 ? 0 : 1)}k` : `${Math.round(hz)}`;
+  if (hz >= 1000) {
+    const k = step / 1000;
+    const d = k >= 1 ? 0 : k >= 0.1 ? 1 : k >= 0.01 ? 2 : 3;
+    return `${(hz / 1000).toFixed(d)}k`;
+  }
+  const d = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+  return hz.toFixed(d);
 }
 
 function clamp(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
@@ -64,20 +134,30 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     playheadTime = null,   // absolute seconds, draws a line if provided
     onSeek = null,          // (absoluteSeconds) => void — called on plain click (not drag)
     onVisibleWindowChange = null, // ({start,end}) => void, called after pan/zoom settles
+    onTileCoverageChange = null,  // () => void, called (rAF-throttled) when tiles at the shown level start/finish loading
   },
   ref
 ) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
+  const axisCanvasRef = useRef(null);
+  const axisColorsRef = useRef(null);
+  const spanLabelRef = useRef(null);
+  const freqCanvasRef = useRef(null);
+  const freqSizeRef = useRef({ w: 0, h: 0 });
 
   const [status, setStatus] = useState('loading'); // loading | ready | error
-  // Bumped on every vertical pan/zoom so the sidebar (a plain React render,
-  // not a canvas) re-renders its handle positions/labels.
-  const [vTick, setVTick] = useState(0);
   const manifestRef = useRef(null);
   const curWindowRef = useRef(null);
   const tileCacheRef = useRef(new Map());
+  // Same keys as tileCacheRef: 'pending' | 'loaded' | 'error'. Read by
+  // getTileCoverage() so the waveform nav can mirror what's actually drawn.
+  const tileStateRef = useRef(new Map());
+  const lastLevelRef = useRef(null);
+  const coverageNotifyPendingRef = useRef(false);
+  const onTileCoverageChangeRef = useRef(onTileCoverageChange);
+  onTileCoverageChangeRef.current = onTileCoverageChange;
   // startSec/secPerPx: horizontal (time). vTop/vBot: vertical (frequency),
   // normalized [0,1] fractions of the theoretical 0..Nyquist axis, 1 = top.
   const viewRef = useRef({ startSec: 0, secPerPx: 1, vTop: 1, vBot: 0 });
@@ -95,6 +175,8 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     let cancelled = false;
     setStatus('loading');
     tileCacheRef.current.clear();
+    tileStateRef.current.clear();
+    lastLevelRef.current = null;
 
     fetch(manifestUrl, { cache: 'no-store' })
       .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
@@ -136,6 +218,29 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       canvas.height = Math.max(1, Math.round(height * dpr));
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${height}px`;
+
+      const axis = axisCanvasRef.current;
+      axis.width = Math.max(1, Math.round(rect.width * dpr));
+      axis.height = Math.max(1, Math.round(AXIS_HEIGHT * dpr));
+      axis.style.width = `${rect.width}px`;
+      axis.style.height = `${AXIS_HEIGHT}px`;
+      const cs = getComputedStyle(axis);
+      const cssVar = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+      const freqCanvas = freqCanvasRef.current;
+      const fw = freqCanvas.parentElement.clientWidth;
+      freqSizeRef.current = { w: fw, h: height };
+      freqCanvas.width = Math.max(1, Math.round(fw * dpr));
+      freqCanvas.height = Math.max(1, Math.round(height * dpr));
+      freqCanvas.style.width = `${fw}px`;
+      freqCanvas.style.height = `${height}px`;
+
+      axisColorsRef.current = {
+        accent: cssVar('--accent-mid', '#2d8daf'),
+        bg: cssVar('--bg-panel', '#14181f'),
+        tick: cssVar('--border-strong', '#bcc2cc'),
+        text: cssVar('--text', '#edf2f4'),
+        font: cssVar('--mono', 'monospace'),
+      };
       clampView();
       scheduleDraw();
     };
@@ -242,7 +347,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       vBot: clamp(vBot, 0, 1),
     };
     clampView();
-    setVTick(t => t + 1);
   }
 
   function pickLevel() {
@@ -270,7 +374,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     view.vBot = vUnder - anchorFrac * span;
     view.vTop = view.vBot + span;
     clampVertical();
-    setVTick(t => t + 1);
   }
 
   function notifyVisibleWindow() {
@@ -296,11 +399,51 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     if (img) return img;
     img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => scheduleDraw();
-    img.onerror = () => {};
+    img.onload = () => {
+      tileStateRef.current.set(key, 'loaded');
+      scheduleDraw();
+      scheduleCoverageNotify();
+    };
+    img.onerror = () => {
+      tileStateRef.current.set(key, 'error');
+      scheduleCoverageNotify();
+    };
     img.src = tilePath(L, t);
     tileCacheRef.current.set(key, img);
+    tileStateRef.current.set(key, 'pending');
+    scheduleCoverageNotify();
     return img;
+  }
+
+  // Time ranges (absolute seconds) covered by tiles at the level currently
+  // being drawn, grouped by load state. Tiles at other zoom levels aren't
+  // included: they wouldn't be what the spectrogram shows at this zoom.
+  function getTileCoverage() {
+    const manifest = manifestRef.current;
+    const curWindow = curWindowRef.current;
+    const out = { loaded: [], pending: [] };
+    if (!manifest || !curWindow) return out;
+    const L = pickLevel();
+    const lvl = curWindow.levels[L];
+    const tileW = manifest.tileWidth;
+    const prefix = curWindow.fftSize + '/' + L + '/';
+    for (const [key, state] of tileStateRef.current) {
+      if (!key.startsWith(prefix) || state === 'error') continue;
+      const t = Number(key.slice(prefix.length));
+      const c0 = t * tileW;
+      const c1 = Math.min(lvl.numColumns, c0 + tileW);
+      out[state].push([c0 * lvl.secondsPerColumn, c1 * lvl.secondsPerColumn]);
+    }
+    return out;
+  }
+
+  function scheduleCoverageNotify() {
+    if (coverageNotifyPendingRef.current) return;
+    coverageNotifyPendingRef.current = true;
+    requestAnimationFrame(() => {
+      coverageNotifyPendingRef.current = false;
+      onTileCoverageChangeRef.current?.();
+    });
   }
 
   // -------------------------------------------------------------------
@@ -335,6 +478,7 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       const { cssW } = sizeRef.current;
       return { start: startSec, end: startSec + cssW * secPerPx };
     },
+    getTileCoverage,
     setPlayheadTime(t) {
       playheadRef.current = t;
       scheduleDraw();
@@ -367,6 +511,10 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
 
     const view = viewRef.current;
     const L = pickLevel();
+    if (L !== lastLevelRef.current) {
+      lastLevelRef.current = L;
+      scheduleCoverageNotify();
+    }
     const lvl = curWindow.levels[L];
     const spc = lvl.secondsPerColumn;
     const tileW = manifest.tileWidth;
@@ -416,6 +564,182 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         ctx.stroke();
       }
     }
+
+    drawTimeAxis();
+    drawFreqRuler();
+  }
+
+  // Tick frequencies for the visible band [lo, hi]; yOf maps Hz -> ruler px.
+  // Returns { major, minor, label(f), edgeLabel(f) } — edgeLabel formats the
+  // exact band-edge readouts, one digit finer than the ticks.
+  function pickFreqTicks(lo, hi, yOf) {
+    const linearTicks = () => {
+      const h = Math.abs(yOf(lo) - yOf(hi));
+      const step = niceStep(((hi - lo) * FREQ_MIN_LABEL_PX) / Math.max(1, h));
+      const minorStep = niceStep(step / 5);
+      const major = [], minor = [];
+      for (let k = Math.ceil(lo / minorStep - 1e-9); k <= Math.floor(hi / minorStep + 1e-9); k++) {
+        const f = k * minorStep;
+        if (Math.abs(f / step - Math.round(f / step)) < 1e-6) major.push(f); else minor.push(f);
+      }
+      const minorGap = (minorStep / Math.max(1e-9, hi - lo)) * h;
+      return {
+        major,
+        minor: minorGap >= FREQ_MIN_MINOR_PX ? minor : [],
+        label: (f) => fmtHz(f, step),
+        edgeLabel: (f) => fmtHz(f, step / 10),
+      };
+    };
+    if (!isLog()) return linearTicks();
+
+    // Log scale: 1/2/5 (or every integer) multiples of each power of ten,
+    // whichever is densest while still leaving room for labels.
+    const decadeVals = (mults) => {
+      const out = [];
+      for (let d = Math.floor(Math.log10(Math.max(lo, 1e-6))); d <= Math.ceil(Math.log10(hi)); d++) {
+        for (const m of mults) {
+          const f = m * Math.pow(10, d);
+          if (f >= lo && f <= hi) out.push(f);
+        }
+      }
+      return out;
+    };
+    const minGap = (vals) => {
+      let g = Infinity;
+      for (let i = 1; i < vals.length; i++) g = Math.min(g, Math.abs(yOf(vals[i - 1]) - yOf(vals[i])));
+      return g;
+    };
+    let major = decadeVals([1]);
+    for (const mults of [[1, 2, 5], [1, 2, 3, 4, 5, 6, 7, 8, 9]]) {
+      const vals = decadeVals(mults);
+      if (minGap(vals) >= FREQ_MIN_LABEL_PX) major = vals;
+    }
+    // Zoomed in, a log band is close to linear and evenly spaced ticks fit
+    // more labels than decade multiples do — use those when they still fit.
+    const lin = linearTicks();
+    if (lin.major.length > major.length && minGap(lin.major) >= FREQ_MIN_LABEL_PX) return lin;
+
+    const all = decadeVals([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const minor = minGap(all) >= FREQ_MIN_MINOR_PX ? all.filter(f => !major.includes(f)) : [];
+    // Decade multiples (300, 2k, 50…) only need their own magnitude's precision.
+    return {
+      major,
+      minor,
+      label: (f) => fmtHz(f, f),
+      edgeLabel: (f) => fmtHz(f, f / 100),
+    };
+  }
+
+  function drawFreqRuler() {
+    const canvas = freqCanvasRef.current;
+    const colors = axisColorsRef.current;
+    if (!canvas || !colors || !manifestRef.current) return;
+    const fctx = canvas.getContext('2d');
+    const { dpr } = sizeRef.current;
+    const { w: W, h: H } = freqSizeRef.current;
+    const { vTop, vBot } = viewRef.current;
+    const span = Math.max(1e-9, vTop - vBot);
+    const yOf = (f) => (1 - (freqToV(f) - vBot) / span) * H;
+    const lo = vToFreq(vBot), hi = vToFreq(vTop);
+
+    fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fctx.fillStyle = colors.bg;
+    fctx.fillRect(0, 0, W, H);
+
+    // Where the visible band sits within the full 0..Nyquist range.
+    const mx = W - FREQ_MINIMAP_W - 1;
+    fctx.fillStyle = colors.tick;
+    fctx.globalAlpha = 0.25;
+    fctx.fillRect(mx, 0, FREQ_MINIMAP_W, H);
+    fctx.globalAlpha = 1;
+    fctx.fillStyle = colors.accent;
+    fctx.fillRect(mx, (1 - vTop) * H, FREQ_MINIMAP_W, Math.max(2, span * H));
+
+    const { major, minor, label, edgeLabel } = pickFreqTicks(lo, hi, yOf);
+    fctx.strokeStyle = colors.tick;
+    fctx.lineWidth = 1;
+    fctx.beginPath();
+    for (const f of minor) {
+      const y = Math.round(yOf(f)) + 0.5;
+      fctx.moveTo(0, y); fctx.lineTo(3, y);
+    }
+    for (const f of major) {
+      const y = Math.round(yOf(f)) + 0.5;
+      fctx.moveTo(0, y); fctx.lineTo(6, y);
+    }
+    fctx.stroke();
+
+    fctx.font = `9px ${colors.font}`;
+    fctx.fillStyle = colors.text;
+    fctx.textBaseline = 'middle';
+    for (const f of major) {
+      const y = yOf(f);
+      if (y < FREQ_EDGE_CLEAR_PX || y > H - FREQ_EDGE_CLEAR_PX) continue;
+      fctx.fillText(label(f), 8, y);
+    }
+
+    // Exact band edges, in the accent color so they read as the limits.
+    fctx.fillStyle = colors.accent;
+    fctx.textBaseline = 'top';
+    fctx.fillText(edgeLabel(hi), 3, 2);
+    fctx.textBaseline = 'bottom';
+    fctx.fillText(edgeLabel(lo), 3, H - 1);
+  }
+
+  function drawTimeAxis() {
+    const axis = axisCanvasRef.current;
+    const colors = axisColorsRef.current;
+    const manifest = manifestRef.current;
+    if (!axis || !colors || !manifest) return;
+    const actx = axis.getContext('2d');
+    const { cssW, dpr } = sizeRef.current;
+    const { startSec, secPerPx } = viewRef.current;
+    const endSec = startSec + cssW * secPerPx;
+    const showHours = manifest.durationSeconds >= 3600;
+
+    actx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    actx.fillStyle = colors.bg;
+    actx.fillRect(0, 0, cssW, AXIS_HEIGHT);
+
+    const { major, minor } = pickTimeSteps(secPerPx);
+    actx.strokeStyle = colors.tick;
+    actx.fillStyle = colors.text;
+    actx.lineWidth = 1;
+    actx.font = `10px ${colors.font}`;
+    actx.textBaseline = 'top';
+
+    actx.beginPath();
+    const kStart = Math.ceil(startSec / minor - 1e-9);
+    const kEnd = Math.floor(endSec / minor + 1e-9);
+    for (let k = kStart; k <= kEnd; k++) {
+      const t = k * minor;
+      const x = Math.round((t - startSec) / secPerPx) + 0.5;
+      const isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
+      actx.moveTo(x, 0);
+      actx.lineTo(x, isMajor ? 9 : 4);
+      if (isMajor) {
+        const label = fmtAxisTime(t, major, showHours);
+        if (x + 3 + actx.measureText(label).width <= cssW) actx.fillText(label, x + 3, 9);
+      }
+    }
+    actx.stroke();
+
+    // Playhead marker
+    const playheadTime = playheadRef.current;
+    if (playheadTime != null) {
+      const x = (playheadTime - startSec) / secPerPx;
+      if (x >= 0 && x <= cssW) {
+        actx.fillStyle = colors.text;
+        actx.beginPath();
+        actx.moveTo(x - 4, 0);
+        actx.lineTo(x + 4, 0);
+        actx.lineTo(x, 6);
+        actx.closePath();
+        actx.fill();
+      }
+    }
+
+    if (spanLabelRef.current) spanLabelRef.current.textContent = fmtSpan(endSec - startSec);
   }
 
   // -------------------------------------------------------------------
@@ -450,7 +774,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     clampView();
     scheduleDraw();
     scheduleNotify();
-    setVTick(t => t + 1);
   }, [scheduleDraw, scheduleNotify]);
 
   const handlePointerUp = useCallback((e) => {
@@ -489,8 +812,8 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   }, [scheduleDraw]);
 
   // -------------------------------------------------------------------
-  // Frequency-zoom sidebar: two draggable handles (top/bottom of the
-  // visible band) plus scroll-to-zoom, per the right-side track.
+  // Frequency ruler sidebar: drag to pan, scroll to zoom, and grips at the
+  // top/bottom edges to move just that end of the visible band.
   // -------------------------------------------------------------------
   const sidebarRef = useRef(null);
   const sidebarDragRef = useRef(null); // { which: 'top'|'bot'|'pan', ... }
@@ -498,22 +821,24 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   function sidebarPointerMove(e) {
     const drag = sidebarDragRef.current;
     if (!drag || !sidebarRef.current) return;
+    // The ruler shows only the visible band, so drags are scaled by its
+    // span: grab-and-drag pans like the canvas does, and the edge grips
+    // narrow the band when pulled inward (top down / bottom up).
     const rect = sidebarRef.current.getBoundingClientRect();
-    const dyFrac = -(e.clientY - drag.startY) / Math.max(1, rect.height); // up = increase v
+    const span = drag.startVTop - drag.startVBot;
+    const dv = ((e.clientY - drag.startY) / Math.max(1, rect.height)) * span;
     const view = viewRef.current;
     if (drag.which === 'pan') {
-      const span = drag.startVTop - drag.startVBot;
-      view.vTop = drag.startVTop + dyFrac * span;
-      view.vBot = drag.startVBot + dyFrac * span;
+      view.vTop = drag.startVTop + dv;
+      view.vBot = drag.startVBot + dv;
     } else if (drag.which === 'top') {
-      view.vTop = clamp(drag.startVTop + dyFrac, view.vBot + MIN_VSPAN, 1);
+      view.vTop = clamp(drag.startVTop - dv, view.vBot + MIN_VSPAN, 1);
     } else if (drag.which === 'bot') {
-      view.vBot = clamp(drag.startVBot + dyFrac, 0, view.vTop - MIN_VSPAN);
+      view.vBot = clamp(drag.startVBot - dv, 0, view.vTop - MIN_VSPAN);
     }
     clampVertical();
     scheduleDraw();
     scheduleNotify();
-    setVTick(t => t + 1);
   }
 
   function sidebarPointerUp() {
@@ -557,13 +882,9 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   }, []);
 
   const haveManifest = status === 'ready' && !!manifestRef.current;
-  const view = viewRef.current;
-  // Handle positions as % from the top of the track (top = 1 - vTop, since vTop=1 is the top).
-  const topPct = haveManifest ? (1 - view.vTop) * 100 : 0;
-  const botPct = haveManifest ? (1 - view.vBot) * 100 : 100;
-  void vTick; // referenced only to force a re-render when vTick changes
 
   return (
+    <>
     <div className="tile-spec-viewer-row" style={{ height }}>
       <div
         ref={containerRef}
@@ -590,31 +911,35 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         style={{ width: FREQ_SIDEBAR_WIDTH }}
         onWheel={handleSidebarWheel}
         onPointerDown={sidebarTrackPointerDown}
-        title="Drag to pan, scroll to zoom the frequency range"
+        title="Drag to pan, scroll to zoom, drag the top/bottom edge to adjust that end"
       >
+        <canvas ref={freqCanvasRef} className="freq-ruler-canvas" />
         {haveManifest && (
           <>
-            <div className="freq-zoom-band" style={{ top: `${topPct}%`, bottom: `${100 - botPct}%` }} />
-            <div className="freq-zoom-label freq-zoom-label--top" style={{ top: `${topPct}%` }}>
-              {fmtFreq(vToFreq(view.vTop))}
-            </div>
-            <div className="freq-zoom-label freq-zoom-label--bot" style={{ top: `${botPct}%` }}>
-              {fmtFreq(vToFreq(view.vBot))}
-            </div>
             <div
-              className="freq-zoom-handle freq-zoom-handle--top"
-              style={{ top: `${topPct}%` }}
+              className="freq-zoom-grip freq-zoom-grip--top"
+              style={{ height: FREQ_GRIP_PX }}
               onPointerDown={sidebarHandlePointerDown('top')}
             />
             <div
-              className="freq-zoom-handle freq-zoom-handle--bot"
-              style={{ top: `${botPct}%` }}
+              className="freq-zoom-grip freq-zoom-grip--bot"
+              style={{ height: FREQ_GRIP_PX }}
               onPointerDown={sidebarHandlePointerDown('bot')}
             />
           </>
         )}
       </div>
     </div>
+    <div className="tile-time-axis-row" style={{ height: AXIS_HEIGHT }}>
+      <canvas ref={axisCanvasRef} className="tile-time-axis" />
+      <div
+        ref={spanLabelRef}
+        className="tile-time-axis-span"
+        style={{ width: FREQ_SIDEBAR_WIDTH }}
+        title="Length of time visible in the viewer"
+      />
+    </div>
+    </>
   );
 });
 
