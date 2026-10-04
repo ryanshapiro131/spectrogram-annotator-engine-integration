@@ -37,10 +37,15 @@ import librosa
 import numpy as np
 import soundfile as sf
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+# Imported before ENGINE_BIN is read: app_auth loads annotation_server/.env.
+from app_auth import AuthUser, current_user, register_audio_file
+from app_auth import router as auth_router
 
 CHUNK_DURATION = 180
 CACHE_DIR      = Path(tempfile.gettempdir()) / "spectrogram_cache"
@@ -71,15 +76,15 @@ app = FastAPI(title="Spectrogram Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",
-        "http://152.20.12.100:8000", "http://152.20.12.100:5173"
-    ],
+    # Any port on localhost / 127.0.0.1 / the lab server. Add more hosts with
+    # CORS_EXTRA_ORIGINS (comma-separated full origins, e.g. http://10.0.0.5:5173).
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|152\.20\.12\.219)(:\d+)?$",
+    allow_origins=[o.strip() for o in os.environ.get("CORS_EXTRA_ORIGINS", "").split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 _registry: dict[str, dict] = {}
 _registry_lock = threading.Lock()
@@ -285,6 +290,8 @@ async def upload(
     hop_length: int   = Query(160),
     n_mels:     int   = Query(128),
     top_db:     float = Query(80.0),
+    project_id: str | None = Query(None, description="Project (UUID) to register this file in"),
+    user: AuthUser | None = Depends(current_user),
 ):
     """
     Receive audio, transcode to WAV, cache to disk.
@@ -341,11 +348,22 @@ async def upload(
     # if a manifest from a prior run is still on disk.
     _start_tile_generation(file_id)
 
-    return JSONResponse(_registry[file_id] | {"file_id": file_id})
+    # Link the audio to a project in the database so annotations can reference it.
+    # Done after decoding so duration/sample-rate come from the real audio.
+    audio_file = None
+    if project_id:
+        if user is None:
+            raise HTTPException(401, "Sign in to add files to a project.")
+        audio_file = await run_in_threadpool(register_audio_file, user, project_id, file_id, _registry[file_id])
+
+    return JSONResponse(_registry[file_id] | {
+        "file_id":       file_id,
+        "audio_file_id": audio_file["id"] if audio_file else None,
+    })
 
 
 @app.get("/chunk/{file_id}/{chunk_index}")
-def get_chunk_wav(file_id: str, chunk_index: int):
+def get_chunk_wav(file_id: str, chunk_index: int, _user=Depends(current_user)):
     """Return (and cache) a WAV blob for the requested chunk."""
     cache = _cache_path(file_id, "wav", chunk_index)
     if cache.exists():
@@ -361,7 +379,7 @@ def get_chunk_wav(file_id: str, chunk_index: int):
 
 
 @app.get("/sxx/{file_id}/{chunk_index}")
-def get_sxx(file_id: str, chunk_index: int):
+def get_sxx(file_id: str, chunk_index: int, _user=Depends(current_user)):
     """
     Return the full sxx matrix as JSON.
     Computed once and cached to disk; repeat requests are instant reads.
@@ -380,7 +398,8 @@ def get_sxx(file_id: str, chunk_index: int):
 
 
 @app.get("/overview/{file_id}")
-def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000)):
+def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000),
+                 _user=Depends(current_user)):
     """
     Return a downsampled RMS waveform for the whole file — used to render
     the full-file navigation strip (color = loaded, gray = not yet loaded).
@@ -405,7 +424,7 @@ def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000)):
 
 
 @app.get("/tiles-status/{file_id}")
-def get_tiles_status(file_id: str):
+def get_tiles_status(file_id: str, _user=Depends(current_user)):
     """
     Poll this after upload. status is one of:
       idle | pending | running | ready | error
@@ -427,7 +446,7 @@ def health():
 
 
 @app.delete("/file/{file_id}")
-def evict_file(file_id: str):
+def evict_file(file_id: str, _user=Depends(current_user)):
     _registry.pop(file_id, None)
     for p in CACHE_DIR.glob(f"{file_id}_*"):
         p.unlink(missing_ok=True)
@@ -441,7 +460,9 @@ def evict_file(file_id: str):
 # Serve tile pyramids + manifest.json as plain static files — this is the
 # whole point of the engine integration: zero server-side work per tile
 # request, just disk reads. Mounted last so it doesn't shadow the API routes
-# above.
+# above. NOT behind auth: tiles are loaded via `new Image()`, which can't send
+# an Authorization header. file_ids are content hashes, so they're not
+# guessable without already having the audio.
 app.mount("/tiles", StaticFiles(directory=str(TILES_DIR)), name="tiles")
 
 
