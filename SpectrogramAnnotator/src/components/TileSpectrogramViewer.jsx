@@ -43,6 +43,13 @@ const INITIAL_VIEW_SECONDS = 180; // ~3 minutes visible on initial load, instead
 const MIN_VSPAN = 1 / 64; // deepest frequency zoom (fraction of the full theoretical axis)
 const CONTENT_FIT_PAD = 0.06; // extra headroom (fraction of content span) above/below content on initial fit
 
+// Tile loading (see the "Tiles" section in the component).
+const MAX_INFLIGHT = 6;        // matches the browser's per-host connection limit
+const PREFETCH_SCREENS = 1;    // keep this many screen-widths loaded on each side
+const MAX_CACHED_TILES = 240;  // decoded tiles held in memory (~1 MB each)
+const MAX_TILE_ATTEMPTS = 4;
+const RETRY_BASE_MS = 1000;    // doubles per failed attempt
+
 // Width of the frequency-zoom sidebar to the right of the canvas. The
 // annotation overlay (a sibling in App.jsx) is told to stop this many px
 // short of the right edge via a CSS var so its coordinates keep lining up
@@ -150,10 +157,11 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   const [status, setStatus] = useState('loading'); // loading | ready | error
   const manifestRef = useRef(null);
   const curWindowRef = useRef(null);
-  const tileCacheRef = useRef(new Map());
-  // Same keys as tileCacheRef: 'pending' | 'loaded' | 'error'. Read by
-  // getTileCoverage() so the waveform nav can mirror what's actually drawn.
-  const tileStateRef = useRef(new Map());
+  // key ('fft/level/tile') -> { L, t, state: idle|loading|loaded|error,
+  //   bmp (ImageBitmap), ctrl (AbortController), loadId, attempts, retryAt,
+  //   lastUsed }. See the "Tiles" section below.
+  const tilesRef = useRef(new Map());
+  const inflightRef = useRef(0);
   const lastLevelRef = useRef(null);
   const coverageNotifyPendingRef = useRef(false);
   const onTileCoverageChangeRef = useRef(onTileCoverageChange);
@@ -174,8 +182,7 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     if (!manifestUrl) return;
     let cancelled = false;
     setStatus('loading');
-    tileCacheRef.current.clear();
-    tileStateRef.current.clear();
+    clearTiles();
     lastLevelRef.current = null;
 
     fetch(manifestUrl, { cache: 'no-store' })
@@ -200,6 +207,10 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifestUrl]);
+
+  // Abort in-flight tile fetches and free decoded tiles on unmount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearTiles(), []);
 
   // -------------------------------------------------------------------
   // Sizing — canvas backing store follows container width via ResizeObserver
@@ -393,46 +404,167 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       .replace('{window}', w.fftSize).replace('{level}', L).replace('{tile}', t);
   }
 
-  function getTile(L, t) {
-    const key = curWindowRef.current.fftSize + '/' + L + '/' + t;
-    let img = tileCacheRef.current.get(key);
-    if (img) return img;
-    img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      tileStateRef.current.set(key, 'loaded');
-      scheduleDraw();
-      scheduleCoverageNotify();
-    };
-    img.onerror = () => {
-      tileStateRef.current.set(key, 'error');
-      scheduleCoverageNotify();
-    };
-    img.src = tilePath(L, t);
-    tileCacheRef.current.set(key, img);
-    tileStateRef.current.set(key, 'pending');
-    scheduleCoverageNotify();
-    return img;
+  // Loading strategy:
+  //   - Every draw computes the tiles it wants, in priority order (see
+  //     wantedTiles), and pumpTiles() starts at most MAX_INFLIGHT fetches.
+  //     Queued tiles that stop being wanted (e.g. levels zoomed straight
+  //     past) are never requested, and in-flight ones are aborted, so the
+  //     level you settle on never waits behind stale requests.
+  //   - The same time window (visible span plus PREFETCH_SCREENS on each
+  //     side) is kept loaded at the current level and the levels directly
+  //     above and below it, so zooming in/out lands on tiles that are
+  //     already there.
+  //   - Failed tiles are retried with backoff instead of staying black.
+  //   - Until a tile arrives, loaded tiles from coarser/finer levels are
+  //     drawn in its place, so the view is never blank.
+  //   - Least-recently-used tiles beyond MAX_CACHED_TILES are evicted
+  //     (decoded tiles are ~1 MB each).
+  function tileKey(L, t) { return curWindowRef.current.fftSize + '/' + L + '/' + t; }
+
+  function tileEntry(L, t) {
+    const key = tileKey(L, t);
+    let e = tilesRef.current.get(key);
+    if (!e) {
+      e = { key, L, t, state: 'idle', bmp: null, ctrl: null, loadId: 0, attempts: 0, retryAt: 0, lastUsed: 0 };
+      tilesRef.current.set(key, e);
+    }
+    return e;
   }
 
-  // Time ranges (absolute seconds) covered by tiles at the level currently
-  // being drawn, grouped by load state. Tiles at other zoom levels aren't
-  // included: they wouldn't be what the spectrogram shows at this zoom.
+  function clearTiles() {
+    for (const e of tilesRef.current.values()) {
+      e.loadId++;
+      e.ctrl?.abort();
+      e.bmp?.close();
+    }
+    tilesRef.current.clear();
+  }
+
+  // Inclusive tile index range at level L overlapping [s0, s1) seconds.
+  function tileRange(L, s0, s1) {
+    const lvl = curWindowRef.current.levels[L];
+    const secPerTile = manifestRef.current.tileWidth * lvl.secondsPerColumn;
+    return [
+      Math.max(0, Math.floor(s0 / secPerTile)),
+      Math.min(lvl.numTiles - 1, Math.floor((s1 - 1e-9) / secPerTile)),
+    ];
+  }
+
+  function wantedTiles(L, s0, s1) {
+    const out = [];
+    const seen = new Set();
+    const mid = (s0 + s1) / 2;
+    const span = s1 - s0;
+    const add = (lv, a, b) => {
+      if (lv < 0 || lv > maxLevel()) return;
+      const [t0, t1] = tileRange(lv, a, b);
+      const secPerTile = manifestRef.current.tileWidth * curWindowRef.current.levels[lv].secondsPerColumn;
+      const ts = [];
+      for (let t = t0; t <= t1; t++) ts.push(t);
+      // Nearest the middle of the view first.
+      ts.sort((x, y) => Math.abs((x + 0.5) * secPerTile - mid) - Math.abs((y + 0.5) * secPerTile - mid));
+      for (const t of ts) {
+        const e = tileEntry(lv, t);
+        if (!seen.has(e.key)) { seen.add(e.key); out.push(e); }
+      }
+    };
+    const pre0 = s0 - span * PREFETCH_SCREENS;
+    const pre1 = s1 + span * PREFETCH_SCREENS;
+    add(maxLevel(), s0, s1); // 1 tile: instant low-detail preview
+    add(L, s0, s1);          // what's on screen, at full detail
+    add(L, pre0, pre1);      // panning margin
+    add(L + 1, pre0, pre1);  // zoom-out lands on loaded tiles
+    add(L - 1, pre0, pre1);  // zoom-in lands on loaded tiles
+    return out;
+  }
+
+  function pumpTiles(wanted) {
+    const wantedKeys = new Set(wanted.map(e => e.key));
+    for (const e of tilesRef.current.values()) {
+      if (e.state === 'loading' && !wantedKeys.has(e.key)) {
+        e.loadId++;
+        e.ctrl.abort();
+        e.state = 'idle';
+      }
+    }
+    const now = performance.now();
+    for (const e of wanted) {
+      e.lastUsed = now;
+      if (inflightRef.current >= MAX_INFLIGHT) continue;
+      const retryable = e.state === 'error' && e.attempts < MAX_TILE_ATTEMPTS && now >= e.retryAt;
+      if (e.state === 'idle' || retryable) startTileLoad(e);
+    }
+    evictTiles();
+  }
+
+  function startTileLoad(e) {
+    const id = ++e.loadId;
+    const ctrl = new AbortController();
+    e.ctrl = ctrl;
+    e.state = 'loading';
+    inflightRef.current++;
+    fetch(tilePath(e.L, e.t), { signal: ctrl.signal })
+      .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.blob(); })
+      .then(blob => createImageBitmap(blob))
+      .then(bmp => {
+        if (id !== e.loadId || tilesRef.current.get(e.key) !== e) { bmp.close(); return; }
+        e.bmp = bmp;
+        e.state = 'loaded';
+        e.attempts = 0;
+      })
+      .catch(err => {
+        if (id !== e.loadId || err.name === 'AbortError') return;
+        e.state = 'error';
+        e.attempts++;
+        if (e.attempts < MAX_TILE_ATTEMPTS) {
+          const delay = RETRY_BASE_MS * 2 ** (e.attempts - 1);
+          e.retryAt = performance.now() + delay;
+          setTimeout(scheduleDraw, delay + 10);
+        } else {
+          console.warn(`TileSpectrogramViewer: giving up on tile ${e.key}`, err);
+        }
+      })
+      .finally(() => {
+        inflightRef.current--;
+        scheduleDraw();
+        scheduleCoverageNotify();
+      });
+    scheduleCoverageNotify();
+  }
+
+  function evictTiles() {
+    const tiles = tilesRef.current;
+    if (tiles.size <= MAX_CACHED_TILES) return;
+    const victims = [...tiles.values()]
+      .filter(e => e.state !== 'loading')
+      .sort((a, b) => a.lastUsed - b.lastUsed)
+      .slice(0, tiles.size - MAX_CACHED_TILES);
+    for (const e of victims) {
+      e.bmp?.close();
+      tiles.delete(e.key);
+    }
+    if (victims.length) scheduleCoverageNotify();
+  }
+
+  // Time ranges (absolute seconds) the spectrogram can show at full detail
+  // at the current zoom: loaded tiles at this level or any finer one (finer
+  // tiles scale down cleanly). Coarser tiles only give a blurry preview, so
+  // they don't count. `pending` is what's loading at this level.
   function getTileCoverage() {
     const manifest = manifestRef.current;
     const curWindow = curWindowRef.current;
     const out = { loaded: [], pending: [] };
     if (!manifest || !curWindow) return out;
     const L = pickLevel();
-    const lvl = curWindow.levels[L];
     const tileW = manifest.tileWidth;
-    const prefix = curWindow.fftSize + '/' + L + '/';
-    for (const [key, state] of tileStateRef.current) {
-      if (!key.startsWith(prefix) || state === 'error') continue;
-      const t = Number(key.slice(prefix.length));
-      const c0 = t * tileW;
+    for (const e of tilesRef.current.values()) {
+      const isLoaded = e.state === 'loaded' && e.L <= L;
+      const isPending = e.state === 'loading' && e.L === L;
+      if (!isLoaded && !isPending) continue;
+      const lvl = curWindow.levels[e.L];
+      const c0 = e.t * tileW;
       const c1 = Math.min(lvl.numColumns, c0 + tileW);
-      out[state].push([c0 * lvl.secondsPerColumn, c1 * lvl.secondsPerColumn]);
+      (isLoaded ? out.loaded : out.pending).push([c0 * lvl.secondsPerColumn, c1 * lvl.secondsPerColumn]);
     }
     return out;
   }
@@ -515,41 +647,49 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       lastLevelRef.current = L;
       scheduleCoverageNotify();
     }
-    const lvl = curWindow.levels[L];
-    const spc = lvl.secondsPerColumn;
     const tileW = manifest.tileWidth;
     const tileH = curWindow.tileHeight;
-    const numCols = lvl.numColumns;
-    const numTiles = lvl.numTiles;
+    const s0 = view.startSec;
+    const s1 = view.startSec + cssW * view.secPerPx;
+
+    pumpTiles(wantedTiles(L, s0, s1));
 
     ctx.imageSmoothingEnabled = true;
-
-    const colToX = (col) => (col * spc - view.startSec) / view.secPerPx;
-    const cStart = view.startSec / spc;
-    const cEnd = (view.startSec + cssW * view.secPerPx) / spc;
-    const tStart = Math.max(0, Math.floor(cStart / tileW));
-    const tEnd = Math.min(numTiles - 1, Math.floor((cEnd - 1e-9) / tileW));
 
     // Vertical (frequency) window -> source rows within each tile. Row 0 is
     // the top (highest freq); vTop (closer to 1) is therefore the smaller
     // row index. See vToRow's comment for why this mapping is scale-agnostic.
+    // Every level shares the same rows, so this holds for fallback tiles too.
     const rowAtTop = vToRow(view.vTop, tileH);
     const rowAtBot = vToRow(view.vBot, tileH);
     const sy = Math.max(0, rowAtTop);
     const sh = Math.max(1e-6, rowAtBot - rowAtTop);
 
-    for (let t = tStart; t <= tEnd; t++) {
-      const colLeft = t * tileW;
-      const wActual = Math.min(tileW, numCols - colLeft);
-      const x0 = Math.round(colToX(colLeft));
-      const x1 = Math.round(colToX(colLeft + wActual));
-      const w = x1 - x0;
-      if (w <= 0) continue;
-      const img = getTile(L, t);
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, 0, sy, wActual, sh, x0, 0, w, cssH);
+    // Draw the loaded tiles of one level, cropped to the visible columns (a
+    // coarse tile can span far more time than is on screen).
+    const drawLevel = (lv) => {
+      const lvl = curWindow.levels[lv];
+      const spc = lvl.secondsPerColumn;
+      const colToX = (col) => (col * spc - s0) / view.secPerPx;
+      const cStart = s0 / spc;
+      const cEnd = s1 / spc;
+      const [t0, t1] = tileRange(lv, s0, s1);
+      for (let t = t0; t <= t1; t++) {
+        const e = tilesRef.current.get(tileKey(lv, t));
+        if (!e || e.state !== 'loaded') continue;
+        const colLeft = t * tileW;
+        const c0 = Math.max(colLeft, cStart);
+        const c1 = Math.min(colLeft + Math.min(tileW, lvl.numColumns - colLeft), cEnd);
+        const x0 = Math.round(colToX(c0));
+        const x1 = Math.round(colToX(c1));
+        if (x1 - x0 <= 0 || c1 - c0 <= 0) continue;
+        ctx.drawImage(e.bmp, c0 - colLeft, sy, c1 - c0, sh, x0, 0, x1 - x0, cssH);
       }
-    }
+    };
+    // Coarsest first so finer detail paints over it; the current level last.
+    for (let lv = maxLevel(); lv > L; lv--) drawLevel(lv);
+    if (L > 0) drawLevel(L - 1);
+    drawLevel(L);
 
     // Playhead
     const playheadTime = playheadRef.current;
@@ -881,6 +1021,20 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Wheel listeners are attached natively with passive: false — React's
+  // onWheel is passive, so its preventDefault() is ignored and the page
+  // would scroll underneath while zooming.
+  useEffect(() => {
+    const canvasEl = containerRef.current;
+    const sidebarEl = sidebarRef.current;
+    canvasEl.addEventListener('wheel', handleWheel, { passive: false });
+    sidebarEl.addEventListener('wheel', handleSidebarWheel, { passive: false });
+    return () => {
+      canvasEl.removeEventListener('wheel', handleWheel);
+      sidebarEl.removeEventListener('wheel', handleSidebarWheel);
+    };
+  }, [handleWheel, handleSidebarWheel]);
+
   const haveManifest = status === 'ready' && !!manifestRef.current;
 
   return (
@@ -892,7 +1046,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onWheel={handleWheel}
       >
         <canvas ref={canvasRef} />
         {status === 'loading' && (
@@ -909,7 +1062,6 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         ref={sidebarRef}
         className="freq-zoom-sidebar"
         style={{ width: FREQ_SIDEBAR_WIDTH }}
-        onWheel={handleSidebarWheel}
         onPointerDown={sidebarTrackPointerDown}
         title="Drag to pan, scroll to zoom, drag the top/bottom edge to adjust that end"
       >
