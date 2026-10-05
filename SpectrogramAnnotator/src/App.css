@@ -303,23 +303,13 @@
   min-width: 36px;
 }
 
-.player-wrapper {
-  padding: 14px 16px 16px;
-}
-
-.player-wrapper--headless {
-  padding: 0;
-  height: 0;
-  overflow: hidden;
-}
-
 .settings-row-note {
   font-size: 10px;
   color: var(--text-dim);
   font-style: italic;
 }
 
-/* ── Tile spectrogram viewer + transport ── */
+/* ── Tile spectrogram viewer ── */
 .tile-viewer-wrapper {
   padding: 14px 16px 0;
 }
@@ -345,29 +335,6 @@
   font-size: 12px;
   font-family: var(--mono);
   background: var(--bg-panel);
-}
-
-.transport-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0 14px;
-}
-
-.transport-play-btn {
-  font-size: 13px;
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-.transport-time {
-  font-size: 11px;
-  font-family: var(--mono);
-  color: var(--text-muted);
 }
 
 /* ── App main ── */
@@ -482,15 +449,6 @@
 }
 
 /* ── Chunk loading placeholder ── */
-.chunk-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 120px;
-  font-size: 12px;
-  color: var(--text-muted);
-  font-family: var(--mono);
-}
 
 /* ── Error screen ── */
 .error-screen {

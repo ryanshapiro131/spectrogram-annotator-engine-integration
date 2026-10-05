@@ -40,7 +40,7 @@ import soundfile as sf
 import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -379,19 +379,61 @@ async def upload(
 
 
 @app.get("/chunk/{file_id}/{chunk_index}")
-def get_chunk_wav(file_id: str, chunk_index: int, _user=Depends(current_user)):
-    """Return (and cache) a WAV blob for the requested chunk."""
-    cache = _cache_path(file_id, "wav", chunk_index)
+def get_chunk_audio(
+    file_id: str,
+    chunk_index: int,
+    format: str = Query("ogg", pattern="^(ogg|mp3)$"),
+    _user=Depends(current_user),
+):
+    """
+    Return (and cache) one chunk's audio for playback, compressed: a
+    3-minute stereo chunk is ~3 MB as Ogg Vorbis vs ~30 MB as WAV. Vorbis is
+    the default because Ogg timestamps are sample-accurate (the playhead
+    must line up with annotations); mp3 is for browsers without Ogg support.
+    Falls back to 16-bit WAV if the encoder rejects the recording (e.g. a
+    sample rate MP3 can't represent).
+    """
+    if not 0 <= chunk_index < _get_meta(file_id)["total_chunks"]:
+        raise HTTPException(404, "Chunk index out of range.")
+    fmt, subtype, media_type = _CHUNK_FORMATS[format]
+    cache    = _cache_path(file_id, f"chunk_{format}", chunk_index)
+    fallback = _cache_path(file_id, "chunk_wav", chunk_index)
     if cache.exists():
-        return Response(content=cache.read_bytes(), media_type="audio/wav")
+        return FileResponse(cache, media_type=media_type)
+    if fallback.exists():
+        return FileResponse(fallback, media_type="audio/wav")
 
     frames, sr = _read_chunk(file_id, chunk_index, mono=False)
-    buf        = io.BytesIO()
-    sf.write(buf, frames, sr, format="WAV", subtype="PCM_16")
-    buf.seek(0)
-    wav_bytes = buf.read()
-    cache.write_bytes(wav_bytes)
-    return Response(content=wav_bytes, media_type="audio/wav")
+    try:
+        _write_audio_atomic(cache, frames, sr, fmt, subtype)
+        return FileResponse(cache, media_type=media_type)
+    except Exception as exc:
+        print(f"[server] {file_id} chunk {chunk_index}: {format} encode failed ({exc}); serving WAV")
+        _write_audio_atomic(fallback, frames, sr, "WAV", "PCM_16")
+        return FileResponse(fallback, media_type="audio/wav")
+
+
+_CHUNK_FORMATS = {
+    "ogg": ("OGG", "VORBIS", "audio/ogg"),
+    "mp3": ("MP3", "MPEG_LAYER_III", "audio/mpeg"),
+}
+
+
+def _write_audio_atomic(path: Path, frames: np.ndarray, sr: int, fmt: str, subtype: str) -> None:
+    """Encode to a temp file, then rename, so a concurrent request for the
+    same chunk never serves a half-written file. Written in 5-second blocks:
+    libsndfile's Vorbis encoder crashes the process on one huge write."""
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".part")
+    os.close(fd)
+    try:
+        with sf.SoundFile(tmp, "w", sr, frames.shape[1], format=fmt, subtype=subtype) as f:
+            block = sr * 5
+            for i in range(0, len(frames), block):
+                f.write(frames[i:i + block])
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 @app.get("/sxx/{file_id}/{chunk_index}")

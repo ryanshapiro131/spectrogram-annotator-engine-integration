@@ -1,0 +1,193 @@
+/* ── Playback bar (under the spectrogram) ── */
+.playback-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 14px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  user-select: none;
+}
+
+.pb-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, transform 0.08s;
+}
+.pb-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.pb-btn:active { transform: scale(0.94); }
+.pb-btn:focus-visible { outline: 2px solid var(--accent-mid); outline-offset: 1px; }
+
+.pb-btn--play {
+  width: 38px;
+  height: 38px;
+  background: var(--accent-mid);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.pb-btn--play:hover { background: var(--accent-light); }
+.pb-btn--play svg { width: 20px; height: 20px; }
+
+.pb-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: pb-spin 0.8s linear infinite;
+}
+@keyframes pb-spin { to { transform: rotate(360deg); } }
+
+.pb-time {
+  flex-shrink: 0;
+  min-width: 64px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.pb-time--total {
+  min-width: 52px;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+/* Scrubber: a thin rail that thickens on hover, with a round thumb. The
+   tall hit area makes it easy to grab without a visually heavy bar. */
+.pb-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+.pb-rail {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+  transition: height 0.12s;
+}
+.pb-track:hover .pb-rail,
+.pb-track--dragging .pb-rail { height: 6px; }
+.pb-buffered {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.28);
+}
+.pb-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--accent-mid);
+}
+.pb-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transform: scale(0);
+  transition: transform 0.12s;
+  pointer-events: none;
+}
+.pb-track:hover .pb-thumb,
+.pb-track--dragging .pb-thumb { transform: scale(1); }
+.pb-hover-time {
+  position: absolute;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pb-volume {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.pb-volume input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 70px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent-mid) var(--pb-fill), rgba(255, 255, 255, 0.18) var(--pb-fill));
+  cursor: pointer;
+}
+.pb-volume input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.pb-volume input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.pb-rate {
+  flex-shrink: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.pb-rate option { color: #000; }
+
+.pb-error {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #ffb4a8;
+}
+
+/* Narrow screens: drop volume, keep transport + scrubber. */
+@media (max-width: 640px) {
+  .pb-volume { display: none; }
+  .playback-bar { gap: 8px; }
+}
