@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useAudioChunker } from './hooks/useAudioChunker';
+import { useAudioPlayback } from './hooks/useAudioPlayback';
 import { useTileViewer } from './hooks/useTileViewer';
 import AnnotationPanel from './components/AnnotationPanel';
 import WaveformNav from './components/WaveformNav';
@@ -7,6 +8,7 @@ import ChunkTimeline from './components/ChunkTimeline';
 import SpectrogramOverlay from './components/SpectrogramOverlay';
 import TileSpectrogramViewer from './components/TileSpectrogramViewer';
 import ExportModal from './components/ExportModal';
+import PlaybackBar from './components/PlaybackBar';
 import './App.css';
 
 function App() {
@@ -28,7 +30,15 @@ function App() {
   const chunker      = useAudioChunker();
   const tiles         = useTileViewer(chunker.fileId);
   const tileViewerRef  = useRef(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  // Audio is fetched on demand (on play) in compressed chunks; the playhead
+  // on the spectrogram follows playback every frame via onFrame.
+  const playback      = useAudioPlayback({
+    fileId:        chunker.fileId,
+    totalChunks:   chunker.totalChunks,
+    chunkDuration: chunker.CHUNK_DURATION,
+    fileDuration:  chunker.fileDuration,
+    onFrame:       (t) => tileViewerRef.current?.setPlayheadTime(t),
+  });
   // Bumped by TileSpectrogramViewer's onVisibleWindowChange whenever the
   // spectrogram is panned/zoomed. SpectrogramOverlay computes annotation box
   // positions from tileViewerRef.getVisibleWindow() at render time, but
@@ -60,11 +70,6 @@ function App() {
   // full-file waveform nav against the old per-chunk cell list.
   const [navMode, setNavMode]             = useState('waveform');
   const layerIdCounter                    = useRef(2);
-  const playerContainerRefs              = useRef({});
-  // Absolute time (seconds) to seek to once the target chunk's <audio> mounts.
-  // Set by handleSeek when the click lands in a different chunk than the
-  // one currently active; cleared once applied.
-  const pendingSeekRef                    = useRef(null);
 
   // Annotation CRUD. `labelId` lets the caller (SpectrogramOverlay's label
   // picker) target ANY existing label, not just whichever tab is active —
@@ -148,109 +153,13 @@ function App() {
     layerIdCounter.current = 2;
   }, []);
 
-  // Pause all mounted audio players, then switch chunk
-  const handleSelectChunk = useCallback((index) => {
-    Object.values(playerContainerRefs.current).forEach(ref => {
-      const audio = ref?.current?.querySelector('audio');
-      if (audio && !audio.paused) audio.pause();
-    });
-    chunker.goToChunk(index);
-  }, [chunker]);
-
-  // Seek to an absolute time anywhere in the file. If the target time falls
-  // in the currently-mounted chunk, seek the <audio> element directly (no
-  // reload). Otherwise switch chunks and stash the target time; the attach
-  // effect below applies it once that chunk's <audio> element mounts.
+  // Seek to an absolute time anywhere in the file: moves the playback
+  // position (no audio download unless playing) and pans the spectrogram so
+  // that time is centered.
   const handleSeek = useCallback((time) => {
-    const chunkDur = chunker.CHUNK_DURATION;
-    if (!chunkDur || !chunker.totalChunks) return;
-    const targetChunk = Math.min(chunker.totalChunks - 1, Math.max(0, Math.floor(time / chunkDur)));
-
-    if (targetChunk === chunker.currentChunk) {
-      const ref   = playerContainerRefs.current[targetChunk];
-      const audio = ref?.current?.querySelector('audio');
-      if (audio) audio.currentTime = time - targetChunk * chunkDur;
-    } else {
-      pendingSeekRef.current = time;
-      handleSelectChunk(targetChunk);
-    }
-
-    // The spectrogram (TileSpectrogramViewer) spans the whole file
-    // independently of which audio chunk is loaded, so it needs its own
-    // explicit nudge to pan to the clicked timestamp — switching chunks
-    // above only affects audio playback.
+    playback.seek(time);
     tileViewerRef.current?.seekTo(time);
-  }, [chunker, handleSelectChunk]);
-
-  // Attach timeupdate + ended listeners to the active chunk's <audio> element
-  useEffect(() => {
-    if (chunker.status !== 'ready') return;
-
-    let rafId;
-    let tries = 0;
-    const MAX_TRIES = 60;
-
-    function attach() {
-      const ref   = playerContainerRefs.current[chunker.currentChunk];
-      const audio = ref?.current?.querySelector('audio');
-
-      if (!audio) {
-        if (++tries < MAX_TRIES) rafId = requestAnimationFrame(attach);
-        return;
-      }
-
-      // Apply a seek that was requested before this chunk finished mounting.
-      // Metadata may not be loaded yet, in which case currentTime writes are
-      // silently ignored — wait for loadedmetadata in that case.
-      if (pendingSeekRef.current != null) {
-        const cs    = chunker.currentChunk * chunker.CHUNK_DURATION;
-        const local = pendingSeekRef.current - cs;
-        pendingSeekRef.current = null;
-        if (local >= 0 && local <= chunker.CHUNK_DURATION + 1) {
-          if (audio.readyState >= 1) {
-            audio.currentTime = local;
-          } else {
-            audio.addEventListener('loadedmetadata', () => { audio.currentTime = local; }, { once: true });
-          }
-        }
-      }
-
-      const handler = () => chunker.onAudioTimeUpdate(audio, 2);
-      const playheadHandler = () => {
-        const abs = audio.currentTime + chunker.currentChunk * chunker.CHUNK_DURATION;
-        tileViewerRef.current?.setPlayheadTime(abs);
-      };
-      const playHandler  = () => setIsPlaying(true);
-      const pauseHandler = () => setIsPlaying(false);
-
-      audio.addEventListener('timeupdate', handler);
-      audio.addEventListener('ended',      handler);
-      audio.addEventListener('timeupdate', playheadHandler);
-      audio.addEventListener('play',  playHandler);
-      audio.addEventListener('pause', pauseHandler);
-      playheadHandler(); // paint the playhead at its starting position immediately
-
-      return () => {
-        audio.removeEventListener('timeupdate', handler);
-        audio.removeEventListener('ended',      handler);
-        audio.removeEventListener('timeupdate', playheadHandler);
-        audio.removeEventListener('play',  playHandler);
-        audio.removeEventListener('pause', pauseHandler);
-      };
-    }
-
-    let cleanup;
-    rafId = requestAnimationFrame(() => { cleanup = attach(); });
-    return () => { cancelAnimationFrame(rafId); cleanup?.(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunker.currentChunk, chunker.status, chunker.currentUrl]);
-
-  const handlePlayPause = useCallback(() => {
-    const ref   = playerContainerRefs.current[chunker.currentChunk];
-    const audio = ref?.current?.querySelector('audio');
-    if (!audio) return;
-    if (audio.paused) audio.play(); else audio.pause();
-  }, [chunker.currentChunk]);
+  }, [playback]);
 
   const handleFileChange = useCallback((e) => {
     const file = e.target.files[0];
@@ -263,20 +172,31 @@ function App() {
     if (file) chunker.loadFile(file);
   }, [chunker]);
 
-  // Keybind: "A" toggles annotate mode, unless the user is typing somewhere
-  // (label popup, layer name field, manual add-annotation form, etc.).
+  // Keybinds, unless the user is typing somewhere (label popup, layer name
+  // field, manual add-annotation form, etc.):
+  //   A      toggle annotate mode
+  //   Space  play / pause (left to the browser when a button has focus, so
+  //          it doesn't press that button as well)
+  //   ← / →  skip 5 seconds
   useEffect(() => {
     const handler = (e) => {
-      if (e.key.toLowerCase() !== 'a') return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = e.target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return;
-      e.preventDefault();
-      setAnnotateMode(m => !m);
+      if (e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setAnnotateMode(m => !m);
+      } else if (e.key === ' ' && tag !== 'BUTTON' && chunker.status === 'ready') {
+        e.preventDefault();
+        playback.toggle();
+      } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && chunker.status === 'ready') {
+        e.preventDefault();
+        handleSeek(playback.getPosition() + (e.key === 'ArrowLeft' ? -5 : 5));
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [playback, handleSeek, chunker.status]);
 
   const isReady    = chunker.status === 'ready';
   const isLoading  = chunker.status === 'uploading' || chunker.status === 'decoding';
@@ -289,8 +209,6 @@ function App() {
           {chunker.fileName && <span className="file-badge">{chunker.fileName}</span>}
           {isReady && (
             <span className="file-meta">
-              {chunker.totalChunks} chunk{chunker.totalChunks !== 1 ? 's' : ''}
-              <span className="file-meta-sep">·</span>
               {formatDuration(chunker.fileDuration)}
             </span>
           )}
@@ -382,11 +300,11 @@ function App() {
               ) : (
                 <ChunkTimeline
                   totalChunks={chunker.totalChunks}
-                  currentChunk={chunker.currentChunk}
-                  chunkUrls={chunker.chunkUrls}
+                  currentChunk={playback.currentChunk}
+                  chunkUrls={Object.fromEntries([...playback.loadedChunks].map(i => [i, true]))}
                   fileDuration={chunker.fileDuration}
                   chunkDuration={chunker.CHUNK_DURATION}
-                  onSelectChunk={handleSelectChunk}
+                  onSelectChunk={(i) => handleSeek(i * chunker.CHUNK_DURATION)}
                 />
               )}
 
@@ -423,45 +341,12 @@ function App() {
                   </div>
                 )}
 
-                <div className="transport-bar">
-                  <button
-                    className="btn btn-ghost btn-sm transport-play-btn"
-                    onClick={handlePlayPause}
-                    title="Play/pause (operates on the currently loaded chunk's audio)"
-                  >
-                    {isPlaying ? '⏸' : '▶'}
-                  </button>
-                  <span className="transport-time">
-                    {formatDuration(chunker.currentChunk * chunker.CHUNK_DURATION)} / {formatDuration(chunker.fileDuration)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="player-wrapper player-wrapper--headless">
-                {Object.entries(chunker.chunkUrls).map(([idxStr, url]) => {
-                  const idx = Number(idxStr);
-
-                  if (!playerContainerRefs.current[idx]) {
-                    playerContainerRefs.current[idx] = React.createRef();
-                  }
-
-                  // Audio playback only — the visual spectrogram above is a
-                  // single TileSpectrogramViewer spanning the whole file, not
-                  // one instance per chunk, so this no longer needs to render
-                  // a spectrogram (or the old per-chunk overlay) itself.
-                  return (
-                    <div
-                      key={`chunk-audio-${idx}`}
-                      ref={playerContainerRefs.current[idx]}
-                      style={{ display: 'none' }}
-                    >
-                      <audio src={url} preload="metadata" />
-                    </div>
-                  );
-                })}
-                {!chunker.currentUrl && (
-                  <div className="chunk-loading">Preparing chunk {chunker.currentChunk + 1}…</div>
-                )}
+                <PlaybackBar
+                  playback={playback}
+                  duration={chunker.fileDuration}
+                  chunkDuration={chunker.CHUNK_DURATION}
+                  onSeek={handleSeek}
+                />
               </div>
             </section>
 

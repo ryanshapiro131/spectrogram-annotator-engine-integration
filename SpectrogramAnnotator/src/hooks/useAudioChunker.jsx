@@ -1,15 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { SERVER } from '../config';
 
+// Audio is split server-side into chunks of this many seconds for playback
+// (see useAudioPlayback, which fetches them on demand).
 const CHUNK_DURATION = 180;
-// Audio is only fetched around wherever playback currently is: the current
-// chunk plus this many on each side. Blob URLs further away are revoked so a
-// long session doesn't hold the whole file's WAV in memory. The spectrogram
-// itself comes from the tile pyramid (see useTileViewer), so nothing else
-// needs per-chunk data anymore.
-const AUDIO_PREFETCH_RADIUS = 1;
-const AUDIO_KEEP_RADIUS     = 2;
 
+// Upload + file metadata + the full-file overview waveform. Playback lives in
+// useAudioPlayback; the spectrogram comes from the tile pyramid (useTileViewer).
 export function useAudioChunker() {
   const [status, setStatus]             = useState('idle');
   const [progress, setProgress]         = useState(0);
@@ -17,75 +14,10 @@ export function useAudioChunker() {
   const [fileDuration, setFileDuration] = useState(0);
   const [sampleRate, setSampleRate]     = useState(16000);
   const [totalChunks, setTotalChunks]   = useState(0);
-  const [currentChunk, setCurrentChunk] = useState(0);
-  const [chunkUrls, setChunkUrls]       = useState({});
   const [overview, setOverview]         = useState(null);   // Float array, 0..1 RMS per point
   const [overviewStatus, setOverviewStatus] = useState('idle'); // idle | loading | ready | error
 
-  const fileIdRef        = useRef(null);
-  const urlCacheRef      = useRef({});
-  const urlPendingRef    = useRef(new Set());
-  const currentChunkRef  = useRef(0);
-  const totalChunksRef   = useRef(0);
-
-  useEffect(() => { currentChunkRef.current = currentChunk; }, [currentChunk]);
-  useEffect(() => { totalChunksRef.current  = totalChunks; },  [totalChunks]);
-
-  // -------------------------------------------------------------------------
-  // WAV fetch — one chunk's audio as a blob URL for an <audio> element
-  // -------------------------------------------------------------------------
-  const fetchChunkUrl = useCallback((index) => {
-    const total = totalChunksRef.current;
-    if (index < 0 || (total > 0 && index >= total)) return;
-    if (urlCacheRef.current[index])       return;
-    if (urlPendingRef.current.has(index)) return;
-    if (!fileIdRef.current)               return;
-
-    const fileId = fileIdRef.current;
-    urlPendingRef.current.add(index);
-    fetch(`${SERVER}/chunk/${fileId}/${index}`)
-      .then(res => { if (!res.ok) throw new Error(`${res.status}`); return res.blob(); })
-      .then(blob => {
-        urlPendingRef.current.delete(index);
-        if (fileIdRef.current !== fileId) return; // a different file was loaded meanwhile
-        urlCacheRef.current[index] = URL.createObjectURL(blob);
-        setChunkUrls(prev => ({ ...prev, [index]: urlCacheRef.current[index] }));
-      })
-      .catch(err => {
-        console.error(`Chunk ${index} WAV error:`, err);
-        urlPendingRef.current.delete(index);
-      });
-  }, []);
-
-  // Revoke blob URLs for chunks far from the current one.
-  function _evictAudio(cur) {
-    const stale = Object.keys(urlCacheRef.current)
-      .map(Number)
-      .filter(k => Math.abs(k - cur) > AUDIO_KEEP_RADIUS);
-    if (stale.length === 0) return;
-    stale.forEach(k => {
-      URL.revokeObjectURL(urlCacheRef.current[k]);
-      delete urlCacheRef.current[k];
-    });
-    setChunkUrls(prev => {
-      const n = { ...prev };
-      stale.forEach(k => delete n[k]);
-      return n;
-    });
-  }
-
-  // On chunk change: make sure the current chunk's audio (and its neighbours)
-  // are loaded, and drop anything far away.
-  useEffect(() => {
-    if (status !== 'ready' || totalChunks === 0) return;
-    fetchChunkUrl(currentChunk);
-    for (let d = 1; d <= AUDIO_PREFETCH_RADIUS; d++) {
-      fetchChunkUrl(currentChunk + d);
-      fetchChunkUrl(currentChunk - d);
-    }
-    _evictAudio(currentChunk);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentChunk, totalChunks, status, fetchChunkUrl]);
+  const fileIdRef = useRef(null);
 
   // -------------------------------------------------------------------------
   // Overview — one downsampled RMS waveform for the whole file, fetched once
@@ -114,11 +46,7 @@ export function useAudioChunker() {
     setProgress(0);
     setFileName(file.name);
 
-    Object.values(urlCacheRef.current).forEach(u => URL.revokeObjectURL(u));
-    fileIdRef.current   = null;
-    urlCacheRef.current = {};
-    urlPendingRef.current.clear();
-    setChunkUrls({});
+    fileIdRef.current = null;
     setOverview(null);
     setOverviewStatus('idle');
 
@@ -153,14 +81,10 @@ export function useAudioChunker() {
       const meta = await res.json();
       setProgress(100);
 
-      fileIdRef.current       = meta.file_id;
-      totalChunksRef.current  = meta.total_chunks;
-      currentChunkRef.current = 0;
-
+      fileIdRef.current = meta.file_id;
       setFileDuration(meta.duration);
       setSampleRate(meta.sample_rate);
       setTotalChunks(meta.total_chunks);
-      setCurrentChunk(0);
       setStatus('ready');
 
       fetchOverview(meta.file_id);
@@ -171,34 +95,11 @@ export function useAudioChunker() {
     }
   }, [fetchOverview]);
 
-  // -------------------------------------------------------------------------
-  // onAudioTimeUpdate — advance to the next chunk when playback ends
-  // -------------------------------------------------------------------------
-  const onAudioTimeUpdate = useCallback((audioEl, bufferSeconds = 2) => {
-    if (!audioEl) return;
-    const total     = totalChunksRef.current;
-    const cur       = currentChunkRef.current;
-    const remaining = (audioEl.duration || 0) - audioEl.currentTime;
-    if (Number.isFinite(remaining) && remaining <= bufferSeconds && cur + 1 < total) {
-      fetchChunkUrl(cur + 1);
-    }
-    if (audioEl.ended && cur + 1 < total) {
-      setCurrentChunk(cur + 1);
-    }
-  }, [fetchChunkUrl]);
-
-  const goToChunk = useCallback((index) => setCurrentChunk(index), []);
-
   return {
-    status, progress, fileName, fileDuration, sampleRate,
-    totalChunks, currentChunk,
+    status, progress, fileName, fileDuration, sampleRate, totalChunks,
     fileId: fileIdRef.current,
-    currentUrl: urlCacheRef.current[currentChunk] || null,
-    chunkUrls,
     overview, overviewStatus,
-    chunkStartTime: currentChunk * CHUNK_DURATION,
-    chunkEndTime:   Math.min((currentChunk + 1) * CHUNK_DURATION, fileDuration),
-    loadFile, goToChunk, onAudioTimeUpdate,
+    loadFile,
     CHUNK_DURATION,
   };
 }
