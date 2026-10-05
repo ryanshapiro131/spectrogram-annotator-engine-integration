@@ -31,6 +31,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import librosa
@@ -48,8 +49,12 @@ from app_auth import AuthUser, current_user, register_audio_file
 from app_auth import router as auth_router
 
 CHUNK_DURATION = 180
-CACHE_DIR      = Path(tempfile.gettempdir()) / "spectrogram_cache"
-CACHE_DIR.mkdir(exist_ok=True)
+# Decoded WAVs (~1.4 GB per hour of stereo audio) and tile pyramids (~1.2 GB)
+# live here, and every tile request is a read from it — put it on fast local
+# disk, not network storage. Override with SPECTROGRAM_CACHE_DIR.
+CACHE_DIR      = Path(os.environ.get("SPECTROGRAM_CACHE_DIR") or Path(tempfile.gettempdir()) / "spectrogram_cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+print(f"[server] cache dir: {CACHE_DIR}")
 
 # Where per-file tile pyramids + manifest.json live. Mounted below as static
 # files at /tiles/{file_id}/... so the frontend fetches them directly with no
@@ -255,12 +260,14 @@ def _run_engine(file_id: str) -> None:
     _set_tiles_status(file_id, "running")
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
+        t0 = time.perf_counter()
         subprocess.run(
             [str(_engine_bin_path), str(_wav_path(file_id)), str(out_dir)],
             check=True, capture_output=True, timeout=3600, text=True,
         )
         if not _tiles_manifest_path(file_id).exists():
             raise RuntimeError("engine exited cleanly but wrote no manifest.json")
+        print(f"[server] {file_id}: tiles generated in {time.perf_counter() - t0:.1f}s")
         _set_tiles_status(file_id, "ready")
     except subprocess.CalledProcessError as exc:
         _set_tiles_status(file_id, "error", exc.stderr[-2000:] if exc.stderr else str(exc))
@@ -300,8 +307,10 @@ async def upload(
     request uses soundfile.seek() on an uncompressed WAV, so seek time
     is O(1) for chunk 1 and chunk 500 alike.
     """
+    t_start = time.perf_counter()
     data    = await file.read()
     file_id = _file_id(data)
+    t_received = time.perf_counter()
 
     if file_id not in _registry:
         wav_path = _wav_path(file_id)
@@ -321,9 +330,16 @@ async def upload(
             except Exception as exc:
                 raise HTTPException(422, f"Could not decode audio: {exc}")
 
+        t_decoded = time.perf_counter()
         # Always write as 32-bit float WAV — perfect quality, O(1) seeks
         sf.write(str(wav_path), y, sr, subtype="FLOAT")
         del y  # free RAM immediately
+        t_written = time.perf_counter()
+        print(
+            f"[server] {file_id}: upload received {t_received - t_start:.1f}s, "
+            f"decode {t_decoded - t_received:.1f}s, write WAV {t_written - t_decoded:.1f}s "
+            f"({wav_path.stat().st_size / 1e9:.2f} GB)"
+        )
 
         n_frames     = sf.info(str(wav_path)).frames
         n_channels   = sf.info(str(wav_path)).channels
@@ -457,13 +473,27 @@ def evict_file(file_id: str, _user=Depends(current_user)):
     return {"deleted": file_id}
 
 
+class _TileFiles(StaticFiles):
+    """Static tiles with browser caching. A tile's content never changes for a
+    given file_id (a content hash), so the browser can keep it for a day
+    instead of re-requesting it on every reload. manifest.json stays
+    uncached — it's what flips from missing to present when generation ends."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith(".png") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=86400"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Serve tile pyramids + manifest.json as plain static files — this is the
 # whole point of the engine integration: zero server-side work per tile
 # request, just disk reads. Mounted last so it doesn't shadow the API routes
-# above. NOT behind auth: tiles are loaded via `new Image()`, which can't send
-# an Authorization header. file_ids are content hashes, so they're not
-# guessable without already having the audio.
-app.mount("/tiles", StaticFiles(directory=str(TILES_DIR)), name="tiles")
+# above. NOT behind auth, so tiles stay plain cacheable GETs. file_ids are
+# content hashes, so they're not guessable without already having the audio.
+app.mount("/tiles", _TileFiles(directory=str(TILES_DIR)), name="tiles")
 
 
 if __name__ == "__main__":
