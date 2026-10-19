@@ -100,6 +100,8 @@ _registry_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _file_id(data: bytes) -> str:
+    # The frontend computes the same id (src/workers/sha1.worker.js) to ask
+    # GET /files/{file_id} whether it can skip the upload — keep them in sync.
     return hashlib.sha1(data).hexdigest()[:16]
 
 
@@ -112,12 +114,35 @@ def _cache_path(file_id: str, kind: str, chunk: int) -> Path:
     return CACHE_DIR / f"{file_id}_{kind}_{chunk}"
 
 
+def _meta_path(file_id: str) -> Path:
+    return CACHE_DIR / f"{file_id}_meta.json"
+
+
+def _lookup(file_id: str) -> dict | None:
+    """
+    The file's metadata if its decoded WAV is still cached, else None.
+    The registry lives in memory, so after a server restart it's rebuilt
+    from the <file_id>_meta.json written at upload — that's what lets a
+    previously uploaded file skip re-uploading (GET /files/{file_id}).
+    """
+    with _registry_lock:
+        meta = _registry.get(file_id)
+        if meta is None and _meta_path(file_id).exists():
+            try:
+                meta = json.loads(_meta_path(file_id).read_text()) | {"tiles_status": "idle"}
+            except (OSError, ValueError):
+                meta = None
+            if meta is not None:
+                _registry[file_id] = meta
+    if meta is None or not _wav_path(file_id).exists():
+        return None
+    return meta
+
+
 def _get_meta(file_id: str) -> dict:
-    meta = _registry.get(file_id)
+    meta = _lookup(file_id)
     if meta is None:
         raise HTTPException(404, "File not found. Please re-upload.")
-    if not _wav_path(file_id).exists():
-        raise HTTPException(410, "Cache expired. Please re-upload.")
     return meta
 
 
@@ -312,7 +337,7 @@ async def upload(
     file_id = _file_id(data)
     t_received = time.perf_counter()
 
-    if file_id not in _registry:
+    if _lookup(file_id) is None:
         wav_path = _wav_path(file_id)
 
         # Try reading directly with soundfile first (WAV, FLAC, OGG, AIFF…)
@@ -358,7 +383,29 @@ async def upload(
             "top_db":       top_db,
             "tiles_status": "idle",
         }
+        meta = {k: v for k, v in _registry[file_id].items() if not k.startswith("tiles_")}
+        _meta_path(file_id).write_text(json.dumps(meta))
 
+    return await _file_response(file_id, project_id, user)
+
+
+@app.get("/files/{file_id}")
+async def get_file(
+    file_id: str,
+    project_id: str | None = Query(None, description="Project (UUID) to register this file in"),
+    user: AuthUser | None = Depends(current_user),
+):
+    """
+    Open a file the server already has, without uploading it again. The
+    frontend hashes the file locally and calls this first; 404 means it
+    needs to upload. Same response as POST /upload.
+    """
+    if _lookup(file_id) is None:
+        raise HTTPException(404, "Not on the server. Upload it.")
+    return await _file_response(file_id, project_id, user)
+
+
+async def _file_response(file_id: str, project_id: str | None, user: AuthUser | None) -> JSONResponse:
     # Kick off (or resume) tile pyramid generation. Idempotent: no-ops if
     # already running/ready for this file_id, and skips straight to "ready"
     # if a manifest from a prior run is still on disk.
