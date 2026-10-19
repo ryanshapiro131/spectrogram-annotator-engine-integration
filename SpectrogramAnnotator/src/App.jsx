@@ -199,7 +199,7 @@ function App() {
   }, [playback, handleSeek, chunker.status]);
 
   const isReady    = chunker.status === 'ready';
-  const isLoading  = chunker.status === 'uploading' || chunker.status === 'decoding';
+  const isLoading  = ['hashing', 'uploading', 'decoding'].includes(chunker.status);
 
   return (
     <div className="app">
@@ -246,15 +246,15 @@ function App() {
         )}
         {isLoading && (
           <DecodingScreen
-            progress={chunker.progress}
+            transfer={chunker.transfer}
             fileName={chunker.fileName}
             status={chunker.status}
           />
         )}
         {chunker.status === 'error' && (
           <div className="error-screen">
-            <p>Failed to load audio file. Is the spectrogram server running?</p>
-            <code style={{ fontSize: 12, opacity: 0.7 }}>uvicorn server:app --port 8000</code>
+            <p>Failed to load audio file.</p>
+            <code style={{ fontSize: 12, opacity: 0.7 }}>{chunker.error || 'Unknown error'}</code>
             <button className="btn btn-ghost btn-sm" style={{ marginTop: 12 }}
               onClick={() => window.location.reload()}>Reload</button>
           </div>
@@ -420,20 +420,51 @@ function WelcomeScreen({ onFileChange, onFileDrop }) {
   );
 }
 
-function DecodingScreen({ progress, fileName, status }) {
-  const label = status === 'uploading' ? 'Uploading…' : 'Decoding audio…';
+function fmtBytes(n) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+  return `${Math.round(n / 1e3)} KB`;
+}
+
+function fmtEta(sec) {
+  if (sec < 60) return `${Math.max(1, Math.round(sec))} s left`;
+  if (sec < 3600) return `about ${Math.round(sec / 60)} min left`;
+  return `about ${(sec / 3600).toFixed(1)} h left`;
+}
+
+// One screen for the whole load: checking (local hash) -> uploading (real
+// bytes, speed, time left) -> processing on the server (indeterminate).
+function DecodingScreen({ transfer, fileName, status }) {
+  const t = transfer || { fraction: 0 };
+  const pct = Math.round((t.fraction || 0) * 100);
+  let label, detail, hint, indeterminate = false;
+  if (status === 'hashing') {
+    label = 'Checking file…';
+    detail = `${pct}%`;
+    hint = 'Checking whether the server already has this recording, so it can skip the upload.';
+  } else if (status === 'uploading') {
+    label = `Uploading… ${pct}%`;
+    detail = [
+      t.total ? `${fmtBytes(t.loaded || 0)} of ${fmtBytes(t.total)}` : null,
+      t.bytesPerSec ? `${fmtBytes(t.bytesPerSec)}/s` : null,
+      t.etaSec != null ? fmtEta(t.etaSec) : null,
+    ].filter(Boolean).join(' · ');
+    hint = 'Only needed the first time: the server remembers this recording, so opening it again skips the upload.';
+  } else {
+    label = 'Processing on the server…';
+    indeterminate = true;
+    hint = 'Decoding the audio and preparing the spectrogram. Long recordings can take a minute or two.';
+  }
   return (
     <div className="decoding-screen">
       <div className="decoding-content">
         <div className="decoding-filename">{fileName}</div>
         <div className="decoding-label">{label}</div>
-        <div className="decoding-bar-track">
-          <div className="decoding-bar-fill" style={{ width: `${progress}%` }} />
+        <div className={`decoding-bar-track ${indeterminate ? 'decoding-bar-track--indeterminate' : ''}`}>
+          <div className="decoding-bar-fill" style={indeterminate ? undefined : { width: `${pct}%` }} />
         </div>
-        <div className="decoding-hint">
-          The file is decoded server-side using librosa. Spectrograms are
-          computed with native-speed FFT and cached to disk for instant revisits.
-        </div>
+        {detail && <div className="decoding-detail">{detail}</div>}
+        <div className="decoding-hint">{hint}</div>
       </div>
     </div>
   );

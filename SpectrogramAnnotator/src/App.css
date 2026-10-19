@@ -404,9 +404,23 @@
 }
 .decoding-bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--accent-mid);
   border-radius: 2px;
-  transition: width 0.3s ease;
+}
+/* Server-side processing has no measurable progress: a sliding segment. */
+.decoding-bar-track--indeterminate .decoding-bar-fill {
+  width: 30%;
+  animation: decoding-slide 1.4s ease-in-out infinite;
+}
+@keyframes decoding-slide {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(340%); }
+}
+.decoding-detail {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 .decoding-hint {
   font-size: 11px;
