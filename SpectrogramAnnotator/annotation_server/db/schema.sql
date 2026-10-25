@@ -3,8 +3,11 @@
 --
 -- Ported from the original Supabase migration. Differences:
 --   * `users` replaces Supabase's auth.users + public.profiles. Rows are
---     created by the annotation server on first Google sign-in (keyed on the
---     Google account's stable `sub` id).
+--     created by the annotation server on first sign-in: Google sign-in
+--     (keyed on the Google account's stable `sub` id) or, for local testing
+--     only, the developer login (DEV_LOGIN=true; no google_sub). Emails are
+--     unique case-insensitively, so a Google sign-in links to a dev-login
+--     row with the same email.
 --   * No Row Level Security. The frontend never talks to the database; every
 --     read/write goes through FastAPI (annotation_server/app_auth.py), which
 --     checks project roles with has_project_role() below.
@@ -12,17 +15,21 @@
 --     server always sets them explicitly.
 --
 -- Model:
---   users             one row per person who has signed in with Google
+--   users             one row per person who has signed in
 --   projects          a team workspace
 --   project_members   who is in a project + their role
 --   project_invites   pending invites for emails that haven't signed in yet;
 --                     accepted automatically on first sign-in with that email
---   audio_files       recordings registered to a project. The audio itself stays
---                     on the annotation server's disk; content_hash is the
---                     server's `file_id` (sha1 prefix) that links the two.
+--   media_files       recordings / images / videos registered to a project
+--                     (media_type). The media itself stays on the annotation
+--                     server's disk; content_hash is the server's `file_id`
+--                     (sha1 prefix) that links the two. Only audio has an
+--                     annotator so far; image/video columns are groundwork.
 --   labels            ONE shared label vocabulary per project (name + color)
 --   annotations       time (and optional frequency) regions, always attributed
---                     to the annotator who made them (created_by)
+--                     to the annotator who made them (created_by). `extra`
+--                     holds media-specific geometry for future image/video
+--                     annotators (boxes, polygons, frame ranges).
 --
 -- Roles (ascending privilege — enum order matters, see has_project_role):
 --   viewer     read everything in the project
@@ -41,6 +48,7 @@
 -- -----------------------------------------------------------------------------
 
 create type project_role as enum ('viewer', 'annotator', 'admin', 'owner');
+create type media_type   as enum ('audio', 'image', 'video');
 
 
 -- -----------------------------------------------------------------------------
@@ -49,15 +57,15 @@ create type project_role as enum ('viewer', 'annotator', 'admin', 'owner');
 
 create table users (
   id            uuid primary key default gen_random_uuid(),
-  google_sub    text not null unique,   -- Google's stable account id
-  email         text not null,
+  google_sub    text unique,            -- Google's stable account id (null: dev login only)
+  email         text not null check (email = lower(trim(email))),
   display_name  text,
   avatar_url    text,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
   last_login_at timestamptz
 );
-create index users_email_idx on users (lower(email));
+create unique index users_email_uniq on users (email);
 
 create table projects (
   id           uuid primary key default gen_random_uuid(),
@@ -89,14 +97,20 @@ create table project_invites (
 );
 create index project_invites_email_idx on project_invites (email) where accepted_at is null;
 
-create table audio_files (
+create table media_files (
   id            uuid primary key default gen_random_uuid(),
   project_id    uuid not null references projects (id) on delete cascade,
+  media_type    media_type not null,
   content_hash  text not null,   -- annotation server's file_id
   file_name     text not null,
-  duration_sec  double precision not null check (duration_sec >= 0),
-  sample_rate   integer not null check (sample_rate > 0),
-  n_channels    smallint not null check (n_channels > 0),
+  -- audio / video
+  duration_sec  double precision check (duration_sec >= 0),
+  -- audio
+  sample_rate   integer check (sample_rate > 0),
+  n_channels    smallint check (n_channels > 0),
+  -- image / video
+  width_px      integer check (width_px > 0),
+  height_px     integer check (height_px > 0),
   uploaded_by   uuid references users (id) on delete set null,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
@@ -123,30 +137,36 @@ create unique index labels_project_name_uniq on labels (project_id, lower(trim(n
 create table annotations (
   id             uuid primary key default gen_random_uuid(),
   project_id     uuid not null,
-  audio_file_id  uuid not null,
+  media_file_id  uuid not null,
   label_id       uuid not null,
   -- Nullable so removing a user doesn't erase research data.
   created_by     uuid references users (id) on delete set null,
-  start_sec      double precision not null check (start_sec >= 0),
-  end_sec        double precision not null,
+  name           text,
+  -- Time range (audio / video). Null for annotations with no time extent,
+  -- e.g. a box on an image.
+  start_sec      double precision check (start_sec >= 0),
+  end_sec        double precision,
   -- Optional frequency bounds for box annotations (null = full band).
   freq_min_hz    real check (freq_min_hz >= 0),
   freq_max_hz    real check (freq_max_hz >= 0),
   notes          text,
+  -- Media-specific geometry for future image/video annotators.
+  extra          jsonb not null default '{}',
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
-  check (end_sec > start_sec),
+  check ((start_sec is null) = (end_sec is null)),
+  check (start_sec is null or end_sec > start_sec),
   check (freq_min_hz is null or freq_max_hz is null or freq_max_hz > freq_min_hz),
   -- Composite FKs guarantee the file and label belong to the same project as
   -- the annotation.
-  foreign key (audio_file_id, project_id)
-    references audio_files (id, project_id) on delete cascade,
+  foreign key (media_file_id, project_id)
+    references media_files (id, project_id) on delete cascade,
   -- RESTRICT: deleting a shared label must not silently wipe every
   -- annotator's work. Reassign or delete its annotations first.
   foreign key (label_id, project_id)
     references labels (id, project_id) on delete restrict
 );
-create index annotations_file_time_idx on annotations (audio_file_id, start_sec);
+create index annotations_file_time_idx on annotations (media_file_id, start_sec);
 create index annotations_label_idx     on annotations (label_id);
 create index annotations_creator_idx   on annotations (created_by);
 create index annotations_project_idx   on annotations (project_id);
@@ -170,7 +190,7 @@ create trigger set_updated_at before update on users
   for each row execute function set_updated_at();
 create trigger set_updated_at before update on projects
   for each row execute function set_updated_at();
-create trigger set_updated_at before update on audio_files
+create trigger set_updated_at before update on media_files
   for each row execute function set_updated_at();
 create trigger set_updated_at before update on labels
   for each row execute function set_updated_at();

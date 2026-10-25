@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../api';
 import { SERVER } from '../config';
 
 const POLL_MS = 1000;
@@ -31,7 +32,7 @@ export function useTileViewer(fileId) {
     setError(null);
 
     const poll = () => {
-      fetch(`${SERVER}/tiles-status/${fileId}`)
+      apiFetch(`/tiles-status/${fileId}`)
         .then(res => { if (!res.ok) throw new Error(`${res.status}`); return res.json(); })
         .then(data => {
           if (cancelled) return;

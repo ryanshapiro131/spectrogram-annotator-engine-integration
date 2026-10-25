@@ -17,7 +17,7 @@ function secToAbsTime(sec) {
   return m > 0 ? `${m}:${s.padStart(5,'0')}` : s;
 }
 
-function AnnotationRow({ annotation, layerId, layerColor, onUpdate, onDelete, onSeek }) {
+function AnnotationRow({ annotation, layerId, layerColor, canEdit = true, onUpdate, onDelete, onSeek }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(annotation.name || '');
   const [start, setStart] = useState(String(annotation.start));
@@ -63,20 +63,24 @@ function AnnotationRow({ annotation, layerId, layerColor, onUpdate, onDelete, on
       className="ann-row ann-row--seekable"
       style={{ borderLeft: `3px solid ${layerColor}` }}
       onDoubleClick={() => onSeek?.(annotation.start)}
-      title="Double-click to jump to this timestamp"
+      title={`Double-click to jump to this timestamp${annotation.creatorName ? ` · by ${annotation.creatorName}` : ''}`}
     >
       <span className="ann-name" title={annotation.name}>{annotation.name}</span>
       <span className="ann-time">{secToAbsTime(annotation.start)}</span>
       <span className="ann-arrow">→</span>
       <span className="ann-time">{secToAbsTime(annotation.end)}</span>
       <span className="ann-duration">{(annotation.end - annotation.start).toFixed(3)}s</span>
-      <button className="btn btn-icon" onDoubleClick={e => e.stopPropagation()} onClick={() => setEditing(true)} title="Edit">✎</button>
-      <button className="btn btn-icon btn-icon--danger" onDoubleClick={e => e.stopPropagation()} onClick={() => onDelete(layerId, annotation.id)} title="Delete">✕</button>
+      {canEdit && (
+        <>
+          <button className="btn btn-icon" onDoubleClick={e => e.stopPropagation()} onClick={() => setEditing(true)} title="Edit">✎</button>
+          <button className="btn btn-icon btn-icon--danger" onDoubleClick={e => e.stopPropagation()} onClick={() => onDelete(layerId, annotation.id)} title="Delete">✕</button>
+        </>
+      )}
     </div>
   );
 }
 
-function LayerTab({ layer, isActive, onSelect, onUpdate, onRemove, onToggleVisible }) {
+function LayerTab({ layer, isActive, canEdit = true, onSelect, onUpdate, onRemove, onToggleVisible }) {
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState(layer.title);
 
@@ -107,12 +111,12 @@ function LayerTab({ layer, isActive, onSelect, onUpdate, onRemove, onToggleVisib
           onClick={e => e.stopPropagation()}
         />
       ) : (
-        <span className="layer-name" onDoubleClick={e => { e.stopPropagation(); setEditingName(true); }}>
+        <span className="layer-name" onDoubleClick={canEdit ? e => { e.stopPropagation(); setName(layer.title); setEditingName(true); } : undefined}>
           {layer.title}
         </span>
       )}
       <span className="layer-count">{layer.annotations.length}</span>
-      {isActive && (
+      {isActive && canEdit && (
         <button
           className="btn btn-icon btn-icon--danger layer-remove"
           onClick={e => { e.stopPropagation(); onRemove(layer.id); }}
@@ -127,7 +131,7 @@ function LayerTab({ layer, isActive, onSelect, onUpdate, onRemove, onToggleVisib
 // (color + name + count) followed by that layer's own rows, sorted by
 // start time. Rendered for every layer at once — see AnnotationPanel below
 // for why this isn't scoped to just the active layer.
-function LayerAnnotationGroup({ layer, isActive, onUpdateAnnotation, onDeleteAnnotation, onSeek }) {
+function LayerAnnotationGroup({ layer, isActive, canEditAnnotation, onUpdateAnnotation, onDeleteAnnotation, onSeek }) {
   const sorted = [...layer.annotations].sort((a, b) => a.start - b.start);
 
   return (
@@ -145,10 +149,11 @@ function LayerAnnotationGroup({ layer, isActive, onUpdateAnnotation, onDeleteAnn
         <div className="ann-rows">
           {sorted.map(ann => (
             <AnnotationRow
-              key={ann.id}
+              key={ann.key ?? ann.id}
               annotation={ann}
               layerId={layer.id}
               layerColor={layer.color}
+              canEdit={canEditAnnotation(ann)}
               onUpdate={onUpdateAnnotation}
               onDelete={onDeleteAnnotation}
               onSeek={onSeek}
@@ -163,7 +168,9 @@ function LayerAnnotationGroup({ layer, isActive, onUpdateAnnotation, onDeleteAnn
 export default function AnnotationPanel({
   layers, activeLayerId,
   onSelectLayer, onAddLayer, onRemoveLayer, onUpdateLayer, onToggleVisible,
-  onUpdateAnnotation, onDeleteAnnotation, onSeek
+  onUpdateAnnotation, onDeleteAnnotation, onSeek,
+  // Permissions (project files; the standalone annotator allows everything)
+  canCreate = true, canEditLayer = () => true, canEditAnnotation = () => true,
 }) {
   const activeLayer = layers.find(l => l.id === activeLayerId);
 
@@ -174,9 +181,10 @@ export default function AnnotationPanel({
         <div className="layer-tabs">
           {layers.map(layer => (
             <LayerTab
-              key={layer.id}
+              key={layer.key ?? layer.id}
               layer={layer}
               isActive={layer.id === activeLayerId}
+              canEdit={canEditLayer(layer)}
               onSelect={() => onSelectLayer(layer.id)}
               onUpdate={onUpdateLayer}
               onRemove={onRemoveLayer}
@@ -184,10 +192,10 @@ export default function AnnotationPanel({
             />
           ))}
         </div>
-        <button className="btn btn-ghost layer-add-btn" onClick={onAddLayer}>+ Add label</button>
+        {canCreate && <button className="btn btn-ghost layer-add-btn" onClick={onAddLayer}>+ Add label</button>}
       </div>
 
-      {activeLayer && (
+      {activeLayer && canEditLayer(activeLayer) && (
         <div className="layer-controls">
           <label className="layer-control-item">
             Color
@@ -206,9 +214,10 @@ export default function AnnotationPanel({
       <div className="ann-list">
         {layers.map(layer => (
           <LayerAnnotationGroup
-            key={layer.id}
+            key={layer.key ?? layer.id}
             layer={layer}
             isActive={layer.id === activeLayerId}
+            canEditAnnotation={canEditAnnotation}
             onUpdateAnnotation={onUpdateAnnotation}
             onDeleteAnnotation={onDeleteAnnotation}
             onSeek={onSeek}
