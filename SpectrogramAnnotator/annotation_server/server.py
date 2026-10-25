@@ -45,8 +45,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 # Imported before ENGINE_BIN is read: app_auth loads annotation_server/.env.
-from app_auth import AuthUser, current_user, register_audio_file
+from app_auth import AuthUser, current_user, register_media_file
 from app_auth import router as auth_router
+from projects_api import router as projects_router
 
 CHUNK_DURATION = 180
 # Decoded WAVs (~1.4 GB per hour of stereo audio) and tile pyramids (~1.2 GB)
@@ -90,6 +91,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(projects_router)
 
 _registry: dict[str, dict] = {}
 _registry_lock = threading.Lock()
@@ -411,17 +413,17 @@ async def _file_response(file_id: str, project_id: str | None, user: AuthUser | 
     # if a manifest from a prior run is still on disk.
     _start_tile_generation(file_id)
 
-    # Link the audio to a project in the database so annotations can reference it.
+    # Link the audio to a project (a media_files row) so annotations can reference it.
     # Done after decoding so duration/sample-rate come from the real audio.
-    audio_file = None
+    media_file = None
     if project_id:
         if user is None:
             raise HTTPException(401, "Sign in to add files to a project.")
-        audio_file = await run_in_threadpool(register_audio_file, user, project_id, file_id, _registry[file_id])
+        media_file = await run_in_threadpool(register_media_file, user, project_id, file_id, _registry[file_id])
 
     return JSONResponse(_registry[file_id] | {
         "file_id":       file_id,
-        "audio_file_id": audio_file["id"] if audio_file else None,
+        "media_file_id": media_file["id"] if media_file else None,
     })
 
 

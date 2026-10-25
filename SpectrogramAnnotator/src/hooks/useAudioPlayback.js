@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { SERVER } from '../config';
+import { apiFetch } from '../api';
 
 // Ogg Vorbis is sample-accurate (the playhead must line up with annotations)
 // and ~10x smaller than WAV. Browsers without Ogg support get MP3.
@@ -76,7 +76,7 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
     if (urlsRef.current[idx]) return Promise.resolve(urlsRef.current[idx]);
     if (pendingRef.current[idx]) return pendingRef.current[idx];
     const fid = fileIdRef.current;
-    const p = fetch(`${SERVER}/chunk/${fid}/${idx}?format=${CHUNK_FORMAT}`)
+    const p = apiFetch(`/chunk/${fid}/${idx}?format=${CHUNK_FORMAT}`)
       .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.blob(); })
       .then(blob => {
         if (fileIdRef.current !== fid) throw new Error('file changed');

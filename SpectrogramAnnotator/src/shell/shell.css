@@ -1,0 +1,151 @@
+/* App shell: fixed-width left sidebar + scrolling main area. */
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 216px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #262626;
+  border-right: 1px solid #1c1c1c;
+  z-index: 200;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  border-bottom: 1px solid #1c1c1c;
+}
+
+.sidebar-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--accent-light);
+  color: #fff;
+  font-size: 14px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  margin: 16px 8px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8a8;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  color: #d4d4d4;
+  text-decoration: none;
+  font-size: 13px;
+  transition: background 0.1s, color 0.1s;
+}
+.sidebar-link:hover { background: #333; color: #fff; }
+.sidebar-link--active { background: #3a3f42; color: #fff; box-shadow: inset 2px 0 0 var(--accent-light); }
+.sidebar-link--soon { color: #9a9a9a; }
+
+.sidebar-link-icon {
+  width: 16px;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.sidebar-soon {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid #555;
+  border-radius: 8px;
+  font-size: 10px;
+  color: #a8a8a8;
+}
+
+.sidebar-footer {
+  padding: 12px;
+  border-top: 1px solid #1c1c1c;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.sidebar-avatar--initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-light);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sidebar-avatar--pending { background: #555; }
+
+.sidebar-user-text { min-width: 0; }
+.sidebar-user-name,
+.sidebar-user-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-user-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.sidebar-user-email { font-size: 11px; color: #a8a8a8; }
+
+.sidebar-signout { justify-content: center; }
+
+.sidebar-local {
+  font-size: 11px;
+  color: #a8a8a8;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The annotator was a full-page app; inside the shell it fills the main column. */
+.shell-main > .app { flex: 1; min-height: 100vh; }

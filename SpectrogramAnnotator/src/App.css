@@ -475,3 +475,74 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+/* ── Project annotator additions ── */
+.annotator-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.annotator-breadcrumbs a { color: var(--text-secondary); text-decoration: none; white-space: nowrap; }
+.annotator-breadcrumbs a:hover { color: var(--text); text-decoration: underline; }
+.annotator-breadcrumbs > span { color: var(--text-dim); }
+.annotator-breadcrumbs-file {
+  font-family: var(--mono);
+  color: var(--text) !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.readonly-badge {
+  padding: 2px 8px;
+  border-radius: 9px;
+  border: 1px solid #888;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.annotator-load-error {
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: rgba(192, 57, 43, 0.25);
+  border: 1px solid rgba(192, 57, 43, 0.6);
+  font-size: 12px;
+}
+
+/* Autosave status: Saving… / Saved / Couldn't save */
+.save-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 420px;
+  min-width: 0;
+}
+.save-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #9fd8a8;
+}
+.save-indicator--saving .save-indicator-dot { background: #f1c86b; animation: save-pulse 0.9s ease-in-out infinite; }
+.save-indicator--error { color: #ffd0c9; }
+.save-indicator--error .save-indicator-dot { background: #ff7a66; }
+.save-indicator-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ffd0c9;
+  opacity: 0.85;
+}
+.save-indicator-message::before { content: '— '; }
+@keyframes save-pulse { 50% { opacity: 0.35; } }
