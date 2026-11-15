@@ -32,7 +32,7 @@
   --shadow: 0 2px 8px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.06);
   --mono: 'DM Mono', 'Fira Mono', 'Courier New', monospace;
-  --ui: 'DM Sans', 'Helvetica Neue', sans-serif;
+  --ui: 'Inter', 'Helvetica Neue', Arial, sans-serif;
 }
 
 body {
@@ -43,6 +43,7 @@ body {
   line-height: 1.5;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
 }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }

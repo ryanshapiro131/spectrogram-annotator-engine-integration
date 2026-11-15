@@ -373,14 +373,18 @@ function DecodingScreen({ transfer, fileName, status }) {
 }
 
 // The drop zone / file picker shown before a file is loaded.
-export function AudioDropZone({ onFile, title = 'Audio Annotation', subtitle, multiple = false }) {
+// `before` renders between the subtitle and the drop zone (e.g. a project picker);
+// `dropLabel` heads the drop zone when there's something above it.
+export function AudioDropZone({ onFile, title = 'Audio Annotation', subtitle, multiple = false, before, dropLabel }) {
   const [dragging, setDragging] = useState(false);
   return (
     <div className="welcome-screen">
-      <div className="welcome-content">
+      <div className={`welcome-content ${before ? 'welcome-content--wide' : ''}`}>
         <div className="welcome-icon">♪</div>
         <h1 className="welcome-title">{title}</h1>
         {subtitle && <p className="welcome-subtitle">{subtitle}</p>}
+        {before}
+        {dropLabel && <div className="welcome-divider"><span>{dropLabel}</span></div>}
         <label
           className={`file-drop-zone ${dragging ? 'file-drop-zone--dragging' : ''}`}
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
