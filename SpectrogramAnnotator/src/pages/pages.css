@@ -480,6 +480,12 @@
 .welcome-divider::before,
 .welcome-divider::after { content: ''; flex: 1; height: 1px; background: var(--border-strong); opacity: 0.5; }
 
+/* Medium screens: an open members panel leaves the files table too narrow for
+   every column, so drop the optional ones while it's open. */
+@media (max-width: 1320px) {
+  .project-layout--members .col-optional { display: none; }
+}
+
 /* Narrow screens: the members panel floats over the page instead of pushing it. */
 @media (max-width: 960px) {
   .members-panel {
