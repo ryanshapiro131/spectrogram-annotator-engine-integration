@@ -191,3 +191,30 @@
   .pb-volume { display: none; }
   .playback-bar { gap: 8px; }
 }
+
+/* Current time: double-click to type a position to jump to */
+.pb-time--editable {
+  cursor: text;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+.pb-time--editable:hover {
+  background: var(--bg-card);
+}
+.pb-time--editable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.pb-time-input {
+  width: 96px;
+  padding: 2px 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.pb-time-input--error {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px var(--red-light);
+}

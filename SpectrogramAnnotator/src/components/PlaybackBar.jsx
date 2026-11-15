@@ -18,6 +18,23 @@ function fmtTime(sec, showHours, tenths) {
   return tenths ? `${base}.${t}` : base;
 }
 
+// Parse a typed position: plain seconds ("3304.9") or colon-separated
+// HH:MM:SS.S / MM:SS.S ("0:55:04.9", "55:04.9"). Returns seconds, or null
+// if it isn't a valid time.
+export function parseTimeInput(text) {
+  const str = String(text).trim();
+  if (!str) return null;
+  const parts = str.split(':');
+  if (parts.length > 3) return null;
+  if (!parts.every(x => /^\d+(\.\d*)?$|^\.\d+$/.test(x))) return null;
+  // Only the last field may have a fraction; minutes/seconds after a colon
+  // must be under 60.
+  if (parts.slice(0, -1).some(x => x.includes('.'))) return null;
+  const nums = parts.map(Number);
+  if (nums.slice(1).some(n => n >= 60)) return null;
+  return nums.reduce((acc, n) => acc * 60 + n, 0);
+}
+
 const Icon = {
   play: <path d="M8 5.5v13l11-6.5z" />,
   pause: <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" />,
@@ -42,6 +59,10 @@ export default function PlaybackBar({ playback, duration, chunkDuration, onSeek 
   const trackRef = useRef(null);
   const [dragTime, setDragTime] = useState(null);
   const [hover, setHover] = useState(null); // { time, x }
+  // Typed-position editing (double-click the current time): the text, or
+  // null when not editing.
+  const [editText, setEditText] = useState(null);
+  const [editError, setEditError] = useState(false);
   const showHours = duration >= 3600;
 
   const timeAt = useCallback((clientX) => {
@@ -72,6 +93,23 @@ export default function PlaybackBar({ playback, duration, chunkDuration, onSeek 
     setDragTime(null);
   };
 
+  const startEdit = () => {
+    if (!duration) return;
+    setEditText(fmtTime(position, showHours, true));
+    setEditError(false);
+  };
+  const commitEdit = () => {
+    const t = parseTimeInput(editText);
+    if (t == null || t > duration) { setEditError(true); return; }
+    setEditText(null);
+    onSeek(t);
+  };
+  const handleEditKey = (e) => {
+    e.stopPropagation(); // keep Space / arrows / A out of the global shortcuts
+    if (e.key === 'Enter') commitEdit();
+    else if (e.key === 'Escape') setEditText(null);
+  };
+
   const shown = dragTime ?? position;
   const pct = duration > 0 ? (shown / duration) * 100 : 0;
   const volumeShown = playback.muted ? 0 : playback.volume;
@@ -94,7 +132,34 @@ export default function PlaybackBar({ playback, duration, chunkDuration, onSeek 
         </button>
       </div>
 
-      <span className="pb-time" title="Current position">{fmtTime(shown, showHours, true)}</span>
+      {editText != null ? (
+        <input
+          className={`pb-time pb-time-input ${editError ? 'pb-time-input--error' : ''}`}
+          value={editText}
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => { setEditText(e.target.value); setEditError(false); }}
+          onKeyDown={handleEditKey}
+          onBlur={() => setEditText(null)}
+          aria-label="Go to time"
+          title={editError
+            ? `Not a valid time in this file (0 to ${fmtTime(duration, showHours, false)})`
+            : 'Type a time (H:MM:SS.S, M:SS.S or seconds) and press Enter; Esc cancels'}
+          spellCheck={false}
+        />
+      ) : (
+        <span
+          className="pb-time pb-time--editable"
+          title="Current position — double-click to type a time"
+          tabIndex={0}
+          role="button"
+          aria-label={`Current position ${fmtTime(shown, showHours, true)}. Press Enter to type a time.`}
+          onDoubleClick={startEdit}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); startEdit(); } }}
+        >
+          {fmtTime(shown, showHours, true)}
+        </span>
+      )}
 
       <div
         ref={trackRef}

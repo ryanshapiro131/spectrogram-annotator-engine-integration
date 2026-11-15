@@ -42,12 +42,20 @@ function timeToX(t, width, win) {
  *      set, instead of a free-text field this shows a label PICKER: existing
  *      labels (colored swatches, filterable by typing) to reuse, or type a
  *      new name to create one — so a repeated label always keeps its color.
+ *      The picker can also play (once, or on a loop) just the new region so
+ *      it can be checked before saving.
+ *
+ * The overlay itself never takes pointer events (only its pop-up does): it
+ * listens for double-clicks and mouse moves on `eventTargetRef` (the element
+ * wrapping the spectrogram), so single-click-and-drag still reaches the
+ * spectrogram underneath and pans it — in Annotating mode too, which is how
+ * you reach the end of a long region before closing it.
  */
 export default function SpectrogramOverlay({
   duration,             // total file duration in seconds (fallback window)
   specHeight,           // height of the spectrogram canvas area
   labels,               // [{ id, title, color, visible, annotations[] }] — ALL labels
-  activeLabelId,        // id to preselect in the picker
+  activeLabelId,        // id of the active layer (sets the in-progress region's color)
   onAddAnnotation,      // (labelId, {start,end}) => void — stores absolute timestamps
   onResolveOrCreateLabel, // (name) => labelId — reuses an existing label or creates one
   enabled,              // whether annotation mode is active (vs. plain navigation)
@@ -55,6 +63,9 @@ export default function SpectrogramOverlay({
   viewTick,             // bumped by the parent on every pan/zoom — forces this
                          // component to re-render and re-read getVisibleWindow(),
                          // since that window otherwise lives outside React state.
+  eventTargetRef,       // ref to the element wrapping the spectrogram (see above)
+  recentlyDragged,      // () => bool — the last pointer gesture was a pan/drag, not a click
+  playback,             // useAudioPlayback() — for the pop-up's play / loop buttons
 }) {
   const overlayRef = useRef(null);
   const inputRef = useRef(null);
@@ -68,6 +79,7 @@ export default function SpectrogramOverlay({
   const [hoverTime, setHoverTime] = useState(null);
   const [labelQuery, setLabelQuery] = useState('');
   const [popupX, setPopupX] = useState(0);
+  const [hovering, setHovering] = useState(false);
   // Force a re-render on a resize-only re-measure (box positions depend on
   // overlayRef's live width, read at render time below).
   const [, forceTick] = useState(0);
@@ -104,8 +116,9 @@ export default function SpectrogramOverlay({
   const getWidth = () => overlayRef.current?.getBoundingClientRect().width || 1;
 
   const handleDoubleClick = useCallback((e) => {
+    // The first click of this pair was the end of a pan, not a click.
+    if (recentlyDragged?.()) return;
     e.preventDefault();
-    e.stopPropagation();
     const x = getRelativeX(e);
     const w = getWidth();
     const win = windowOf();
@@ -122,13 +135,14 @@ export default function SpectrogramOverlay({
       setStartTime(finalStart);
       setEndTime(finalEnd);
       setPopupX(Math.min((timeToX(finalStart, w, win) + timeToX(finalEnd, w, win)) / 2, w - 280));
-      const activeLabel = labels.find(l => l.id === activeLabelId);
-      setLabelQuery(activeLabel ? activeLabel.title : '');
+      // Start empty so the full layer list shows; type to filter or create.
+      setLabelQuery('');
       setMode('label');
     }
-  }, [mode, startTime, windowOf, labels, activeLabelId]);
+  }, [mode, startTime, windowOf, recentlyDragged]);
 
   const handleMouseMove = useCallback((e) => {
+    setHovering(true);
     if (mode === 'idle' || mode === 'label') return;
     const x = getRelativeX(e);
     const w = getWidth();
@@ -137,15 +151,38 @@ export default function SpectrogramOverlay({
   }, [mode, windowOf]);
 
   const handleMouseLeave = useCallback(() => {
+    setHovering(false);
     setHoverTime(null);
   }, []);
 
+  // Wire the handlers to the spectrogram wrapper. Only events over the
+  // spectrogram canvas itself count (not the frequency sidebar or the
+  // pop-up, which live in the same wrapper).
+  useEffect(() => {
+    const el = eventTargetRef?.current;
+    if (!el || !enabled) return undefined;
+    const onCanvas = (e) => !!e.target.closest?.('.tile-spec-viewer');
+    const dbl = (e) => { if (onCanvas(e)) handleDoubleClick(e); };
+    const move = (e) => { if (onCanvas(e)) handleMouseMove(e); else handleMouseLeave(); };
+    el.addEventListener('dblclick', dbl);
+    el.addEventListener('mousemove', move);
+    el.addEventListener('mouseleave', handleMouseLeave);
+    return () => {
+      el.removeEventListener('dblclick', dbl);
+      el.removeEventListener('mousemove', move);
+      el.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [eventTargetRef, enabled, handleDoubleClick, handleMouseMove, handleMouseLeave]);
+
+  const stopRange = playback?.stopRange;
+
   const cancel = useCallback(() => {
+    stopRange?.();
     setMode('idle');
     setStartTime(null); setEndTime(null);
     setLabelQuery('');
     setHoverTime(null);
-  }, []);
+  }, [stopRange]);
 
   // If annotation mode gets toggled off mid-draw, don't leave a dangling
   // in-progress annotation around.
@@ -174,6 +211,15 @@ export default function SpectrogramOverlay({
   const startX = startTime !== null ? timeToX(startTime, width, win) : null;
   const endX = endTime !== null ? timeToX(endTime, width, win) : null;
   const hoverX = hoverTime !== null ? timeToX(hoverTime, width, win) : null;
+
+  // Clip review in the pop-up: is this region the one currently playing?
+  const clip = playback?.range;
+  const clipActive = !!clip && mode === 'label' && clip.start === startTime && clip.end === endTime;
+  const playClip = (loop) => {
+    if (clipActive && clip.loop === loop) playback.stopRange();
+    else playback.playRange(startTime, endTime, loop);
+    inputRef.current?.focus();
+  };
 
   const activeLabel = labels.find(l => l.id === activeLabelId);
   const drawColor = activeLabel?.color || '#1a6b8a';
@@ -206,11 +252,8 @@ export default function SpectrogramOverlay({
   return (
     <div
       ref={overlayRef}
-      className={`spec-overlay ${enabled ? 'spec-overlay--enabled' : ''} ${mode !== 'idle' ? 'spec-overlay--active' : ''}`}
+      className={`spec-overlay ${enabled ? 'spec-overlay--enabled' : ''} ${mode !== 'idle' ? 'spec-overlay--active' : ''} ${hovering ? 'spec-overlay--hover' : ''}`}
       style={{ height: specHeight }}
-      onDoubleClick={enabled ? handleDoubleClick : undefined}
-      onMouseMove={enabled ? handleMouseMove : undefined}
-      onMouseLeave={enabled ? handleMouseLeave : undefined}
     >
       {/* Persistent annotation boxes, every visible label */}
       {boxes.map(b => (
@@ -224,11 +267,11 @@ export default function SpectrogramOverlay({
 
       {/* Instruction hint */}
       {enabled && mode === 'idle' && (
-        <div className="spec-overlay-hint">Double-click to set start point</div>
+        <div className="spec-overlay-hint">Double-click to set start point · drag to pan</div>
       )}
       {enabled && mode === 'start_set' && (
         <div className="spec-overlay-hint spec-overlay-hint--active">
-          Start set — double-click to set end point
+          Start set — drag to pan, double-click to set end point
         </div>
       )}
 
@@ -287,6 +330,29 @@ export default function SpectrogramOverlay({
                 ({(endTime - startTime).toFixed(3)}s)
               </span>
             </span>
+            {playback && (
+              <>
+                <button
+                  className={`spec-popup-play ${clipActive && !clip.loop ? 'spec-popup-play--on' : ''}`}
+                  onClick={() => playClip(false)}
+                  title={clipActive && !clip.loop ? 'Stop' : 'Play this region once'}
+                  aria-label={clipActive && !clip.loop ? 'Stop' : 'Play region'}
+                >
+                  {clipActive && !clip.loop
+                    ? <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z" /></svg>
+                    : <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>}
+                </button>
+                <button
+                  className={`spec-popup-play ${clipActive && clip.loop ? 'spec-popup-play--on' : ''}`}
+                  onClick={() => playClip(true)}
+                  title={clipActive && clip.loop ? 'Stop looping' : 'Loop this region'}
+                  aria-label={clipActive && clip.loop ? 'Stop looping' : 'Loop region'}
+                  aria-pressed={clipActive && clip.loop}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z" /></svg>
+                </button>
+              </>
+            )}
             <button className="spec-popup-close" onClick={cancel}>✕</button>
           </div>
 

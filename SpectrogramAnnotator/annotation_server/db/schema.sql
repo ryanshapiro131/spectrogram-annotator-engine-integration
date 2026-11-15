@@ -1,9 +1,8 @@
 -- =============================================================================
 -- Spectrogram Annotator — schema (self-hosted PostgreSQL)
 --
--- Ported from the original Supabase migration. Differences:
---   * `users` replaces Supabase's auth.users + public.profiles. Rows are
---     created by the annotation server on first sign-in: Google sign-in
+-- Notes:
+--   * `users` rows are created by the annotation server on first sign-in: Google sign-in
 --     (keyed on the Google account's stable `sub` id) or, for local testing
 --     only, the developer login (DEV_LOGIN=true; no google_sub). Emails are
 --     unique case-insensitively, so a Google sign-in links to a dev-login
@@ -11,8 +10,8 @@
 --   * No Row Level Security. The frontend never talks to the database; every
 --     read/write goes through FastAPI (annotation_server/app_auth.py), which
 --     checks project roles with has_project_role() below.
---   * created_by / uploaded_by / invited_by have no auth.uid() default — the
---     server always sets them explicitly.
+--   * created_by / uploaded_by / invited_by have no default — the server
+--     always sets them explicitly.
 --
 -- Model:
 --   users             one row per person who has signed in

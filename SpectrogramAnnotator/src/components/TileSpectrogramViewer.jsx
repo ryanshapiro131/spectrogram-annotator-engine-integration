@@ -39,6 +39,7 @@ const L0_MAX_PX = 8;   // one native column may stretch to at most this many px
 const WHEEL_SENS = 0.0022;
 const WHEEL_CAP = 0.08;
 const CLICK_DRAG_THRESHOLD = 4; // px — below this, a pointerup counts as a click/seek, not a pan
+const PLAYHEAD_GRAB_PX = 6;     // px either side of the playhead line that grab it for dragging
 const INITIAL_VIEW_SECONDS = 180; // ~3 minutes visible on initial load, instead of fitting the whole file
 const MIN_VSPAN = 1 / 64; // deepest frequency zoom (fraction of the full theoretical axis)
 const CONTENT_FIT_PAD = 0.06; // extra headroom (fraction of content span) above/below content on initial fit
@@ -139,7 +140,8 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     tileBaseUrl,        // e.g. `${SERVER}/tiles/${fileId}/`  (manifest's tilePathPattern is relative to this)
     height = 220,
     playheadTime = null,   // absolute seconds, draws a line if provided
-    onSeek = null,          // (absoluteSeconds) => void — called on plain click (not drag)
+    onSeek = null,          // (absoluteSeconds) => void — called on plain click (not drag), and on
+                            // release after dragging the playhead
     onVisibleWindowChange = null, // ({start,end}) => void, called after pan/zoom settles
     onTileCoverageChange = null,  // () => void, called (rAF-throttled) when tiles at the shown level start/finish loading
   },
@@ -172,7 +174,10 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   const sizeRef = useRef({ cssW: 0, cssH: height, dpr: 1 });
   const drawPendingRef = useRef(false);
   const notifyPendingRef = useRef(false);
-  const dragRef = useRef(null); // { startX, startY, startSec, startVTop, startVBot, moved }
+  const dragRef = useRef(null); // { kind: 'pan'|'playhead', startX, startY, startSec, startVTop, startVBot, moved }
+  // When the last drag (pan or playhead) ended — lets the annotation overlay
+  // ignore a double-click whose first click was really the end of a drag.
+  const lastDragEndRef = useRef(0);
   const playheadRef = useRef(playheadTime);
 
   // -------------------------------------------------------------------
@@ -612,8 +617,14 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     },
     getTileCoverage,
     setPlayheadTime(t) {
+      // While the user is dragging the playhead, their drag owns it.
+      if (dragRef.current?.kind === 'playhead') return;
       playheadRef.current = t;
       scheduleDraw();
+    },
+    // True if a pan/playhead drag ended within the last `ms` milliseconds.
+    recentlyDragged(ms = 500) {
+      return performance.now() - lastDragEndRef.current < ms;
     },
     // Pan the view so absolute time `t` is centered, keeping the current
     // zoom level. Used when navigation happens elsewhere (chunk timeline,
@@ -887,23 +898,53 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
   // release = seek click. Shift+wheel = frequency zoom (mirrors the
   // sidebar's scroll-to-zoom, for convenience without leaving the canvas).
   // -------------------------------------------------------------------
+  // Is container-relative x on (or right next to) the drawn playhead line?
+  function nearPlayhead(x) {
+    const t = playheadRef.current;
+    if (t == null || !manifestRef.current) return false;
+    const px = (t - viewRef.current.startSec) / viewRef.current.secPerPx;
+    return Math.abs(x - px) <= PLAYHEAD_GRAB_PX;
+  }
+
+  function playheadTimeAtX(x) {
+    const duration = manifestRef.current?.durationSeconds ?? Infinity;
+    return clamp(timeAtX(clamp(x, 0, sizeRef.current.cssW)), 0, duration);
+  }
+
   const handlePointerDown = useCallback((e) => {
     if (e.button !== 0) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const kind = nearPlayhead(x) ? 'playhead' : 'pan';
     dragRef.current = {
+      kind,
       startX: e.clientX, startY: e.clientY,
       startSec: viewRef.current.startSec,
       startVTop: viewRef.current.vTop, startVBot: viewRef.current.vBot,
       moved: false,
     };
+    containerRef.current.classList.toggle('tile-spec-viewer--playhead-drag', kind === 'playhead');
     e.currentTarget.setPointerCapture(e.pointerId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handlePointerMove = useCallback((e) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      // Hovering: show a resize cursor over the playhead so it reads as grabbable.
+      const rect = containerRef.current.getBoundingClientRect();
+      containerRef.current.classList.toggle('tile-spec-viewer--playhead-hover', nearPlayhead(e.clientX - rect.left));
+      return;
+    }
     const dx = e.clientX - drag.startX;
     const dy = e.clientY - drag.startY;
     if (Math.abs(dx) > CLICK_DRAG_THRESHOLD || Math.abs(dy) > CLICK_DRAG_THRESHOLD) drag.moved = true;
+    if (drag.kind === 'playhead') {
+      const rect = containerRef.current.getBoundingClientRect();
+      playheadRef.current = playheadTimeAtX(e.clientX - rect.left);
+      scheduleDraw();
+      return;
+    }
     const view = viewRef.current;
     view.startSec = drag.startSec - dx * view.secPerPx;
     const { cssH } = sizeRef.current;
@@ -914,18 +955,24 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
     clampView();
     scheduleDraw();
     scheduleNotify();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleDraw, scheduleNotify]);
 
   const handlePointerUp = useCallback((e) => {
     const drag = dragRef.current;
     dragRef.current = null;
+    containerRef.current?.classList.remove('tile-spec-viewer--playhead-drag');
     if (!drag) return;
-    notifyVisibleWindow();
-    if (!drag.moved && onSeek) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      onSeek(timeAtX(x));
+    if (drag.moved) lastDragEndRef.current = performance.now();
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (drag.kind === 'playhead') {
+      // A playhead drag (or a click right on the line) moves playback there.
+      if (onSeek) onSeek(drag.moved ? playheadRef.current : playheadTimeAtX(x));
+      return;
     }
+    notifyVisibleWindow();
+    if (!drag.moved && onSeek) onSeek(timeAtX(x));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSeek]);
 
@@ -1046,6 +1093,8 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onPointerLeave={() => { if (!dragRef.current) containerRef.current?.classList.remove('tile-spec-viewer--playhead-hover'); }}
       >
         <canvas ref={canvasRef} />
         {status === 'loading' && (

@@ -7,20 +7,13 @@
      this overlay's width always matches the canvas underneath it, not the
      sidebar next to it. */
   right: 46px;
-  /* Pass through to the underlying spectrogram (native click-to-seek, zoom,
-     etc.) unless annotation mode is explicitly enabled. */
+  /* Always pass through to the spectrogram underneath (click to move the
+     playhead, drag to pan, wheel to zoom) — in Annotating mode too. The
+     overlay listens for double-clicks on its wrapper instead; only the
+     label pop-up takes pointer events itself. */
   pointer-events: none;
   z-index: 10;
   user-select: none;
-}
-
-.spec-overlay--enabled {
-  pointer-events: auto;
-}
-
-.spec-overlay--enabled:hover,
-.spec-overlay--active {
-  cursor: crosshair;
 }
 
 /* Dim hint in bottom-left — only visible on hover */
@@ -39,7 +32,7 @@
   transition: opacity 0.15s;
   white-space: nowrap;
 }
-.spec-overlay:hover .spec-overlay-hint {
+.spec-overlay--hover .spec-overlay-hint {
   opacity: 1;
 }
 .spec-overlay-hint--active {
@@ -276,4 +269,34 @@
   font-size: 10px;
   color: var(--text-dim);
   flex-shrink: 0;
+}
+/* Play-once / loop buttons for reviewing the new region before saving */
+.spec-popup-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.spec-popup-play:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.spec-popup-play--on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.spec-popup-play--on:hover { color: #fff; }
+.spec-popup-play:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
