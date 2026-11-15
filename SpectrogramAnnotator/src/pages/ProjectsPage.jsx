@@ -69,6 +69,7 @@ export default function ProjectsPage() {
     <div className="page">
       <div className="page-header">
         <h1 className="page-title">Projects</h1>
+        <div className="page-header-spacer" />
         {!showCreate && (
           <button className="btn btn-solid" onClick={() => setShowCreate(true)}>+ New project</button>
         )}

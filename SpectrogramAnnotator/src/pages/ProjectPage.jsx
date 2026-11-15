@@ -11,6 +11,24 @@ import './pages.css';
 const ROLES = ['viewer', 'annotator', 'admin', 'owner'];
 const rank = (role) => ROLES.indexOf(role);
 
+// Files are shown in one group per media type, in this order.
+const FILE_GROUPS = [
+  { type: 'audio', title: 'Audio', none: 'No audio yet.' },
+  { type: 'video', title: 'Video', none: 'No video files yet.' },
+  { type: 'image', title: 'Photos', none: 'No photos yet.' },
+];
+
+const MEMBERS_OPEN_KEY = 'projectMembersOpen';
+
+function readMembersOpen() {
+  try {
+    const v = localStorage.getItem(MEMBERS_OPEN_KEY);
+    return v === null ? window.innerWidth >= 1200 : v === '1';
+  } catch {
+    return false;
+  }
+}
+
 export default function ProjectPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -18,6 +36,13 @@ export default function ProjectPage() {
   const [project, setProject] = useState(null);
   const [media, setMedia] = useState(null);
   const [error, setError] = useState(null);
+  const [membersOpen, setMembersOpen] = useState(readMembersOpen);
+  const [memberCount, setMemberCount] = useState(null);
+
+  const toggleMembers = () => setMembersOpen(open => {
+    try { localStorage.setItem(MEMBERS_OPEN_KEY, open ? '0' : '1'); } catch { /* per-viewer nicety only */ }
+    return !open;
+  });
 
   const loadProject = useCallback(() =>
     apiJson(`/projects/${projectId}`).then(setProject), [projectId]);
@@ -47,27 +72,45 @@ export default function ProjectPage() {
   const role = project.role;
 
   return (
-    <div className="page">
-      <ProjectHeader
-        project={project}
-        onRenamed={setProject}
-        onDeleted={() => navigate('/', { replace: true })}
-      />
+    <div className={`project-layout ${membersOpen ? 'project-layout--members' : ''}`}>
+      <div className="page project-main">
+        <ProjectHeader
+          project={project}
+          onRenamed={setProject}
+          onDeleted={() => navigate('/', { replace: true })}
+          membersButton={
+            <button
+              className={`btn btn-ghost btn-sm members-toggle ${membersOpen ? 'members-toggle--on' : ''}`}
+              onClick={toggleMembers}
+              aria-expanded={membersOpen}
+              aria-controls="members-panel"
+            >
+              Members{memberCount != null && <span className="members-toggle-count">{memberCount}</span>}
+            </button>
+          }
+        />
 
-      <FilesSection
-        projectId={projectId}
-        role={role}
-        userId={user?.id}
-        media={media}
-        reload={loadMedia}
-      />
+        <FilesSection
+          projectId={projectId}
+          role={role}
+          userId={user?.id}
+          media={media}
+          reload={loadMedia}
+        />
+      </div>
 
-      <MembersSection
-        projectId={projectId}
-        role={role}
-        userId={user?.id}
-        onLeft={() => navigate('/', { replace: true })}
-      />
+      <aside id="members-panel" className="members-panel" aria-label="Members" aria-hidden={!membersOpen}>
+        <div className="members-panel-inner">
+          <MembersSection
+            projectId={projectId}
+            role={role}
+            userId={user?.id}
+            onCount={setMemberCount}
+            onClose={toggleMembers}
+            onLeft={() => navigate('/', { replace: true })}
+          />
+        </div>
+      </aside>
     </div>
   );
 }
@@ -75,7 +118,7 @@ export default function ProjectPage() {
 // ---------------------------------------------------------------------------
 // Header: name (rename for admins), role, delete (owner)
 // ---------------------------------------------------------------------------
-function ProjectHeader({ project, onRenamed, onDeleted }) {
+function ProjectHeader({ project, onRenamed, onDeleted, membersButton }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(project.name);
   const [error, setError] = useState(null);
@@ -134,6 +177,7 @@ function ProjectHeader({ project, onRenamed, onDeleted }) {
         {project.role === 'owner' && (
           <button className="btn btn-danger btn-sm" onClick={remove}>Delete project</button>
         )}
+        {membersButton}
       </div>
       {error && <div className="form-error" role="alert">{error}</div>}
     </>
@@ -141,7 +185,7 @@ function ProjectHeader({ project, onRenamed, onDeleted }) {
 }
 
 // ---------------------------------------------------------------------------
-// Files: list + upload audio
+// Files: one group per media type + upload audio
 // ---------------------------------------------------------------------------
 function FilesSection({ projectId, role, userId, media, reload }) {
   const [uploads, setUploads] = useState([]); // [{ key, name, status, transfer, error }]
@@ -187,64 +231,82 @@ function FilesSection({ projectId, role, userId, media, reload }) {
     }
   };
 
+  if (media === null) return <div className="page-loading">Loading files…</div>;
+
   return (
-    <section className="card section">
-      <div className="section-head">
-        <h2 className="section-title">Files</h2>
-        {canUpload && (
-          <label className="btn btn-solid btn-sm file-input-label">
-            + Upload audio
-            <input
-              type="file" accept={AUDIO_ACCEPT} multiple style={{ display: 'none' }}
-              data-testid="project-upload-input"
-              onChange={e => { const files = [...e.target.files]; e.target.value = ''; addFiles(files); }}
-            />
-          </label>
-        )}
-      </div>
-
-      {uploads.map(u => <UploadRow key={u.key} upload={u} onDismiss={() => setUploads(us => us.filter(x => x.key !== u.key))} />)}
+    <div className="file-groups">
       {error && <div className="form-error" role="alert">{error}</div>}
+      {FILE_GROUPS.map(group => {
+        const info = mediaTypeInfo(group.type);
+        const files = media.filter(f => mediaTypeInfo(f.media_type).type === group.type);
+        const isAudio = group.type === 'audio';
+        const timed = group.type !== 'image';
+        return (
+          <section key={group.type} className={`card section file-group file-group--${group.type}`}>
+            <div className="section-head">
+              <div className="file-group-title">
+                <span className="file-group-icon" aria-hidden="true">{info.icon}</span>
+                <h2 className="section-title">{group.title}</h2>
+                <span className="file-group-count">{files.length}</span>
+              </div>
+              {isAudio && canUpload && (
+                <label className="btn btn-solid btn-sm file-input-label">
+                  + Upload audio
+                  <input
+                    type="file" accept={AUDIO_ACCEPT} multiple style={{ display: 'none' }}
+                    data-testid="project-upload-input"
+                    onChange={e => { const fs = [...e.target.files]; e.target.value = ''; addFiles(fs); }}
+                  />
+                </label>
+              )}
+              {!info.available && <span className="file-group-soon">Annotator coming soon</span>}
+            </div>
 
-      {media === null ? (
-        <div className="page-loading">Loading files…</div>
-      ) : media.length === 0 ? (
-        <div className="section-empty">
-          {canUpload ? 'No files yet. Upload a recording to start annotating.' : 'No files in this project yet.'}
-        </div>
-      ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th><th>Type</th><th>Length</th><th>Annotations</th><th>Uploaded by</th><th>Added</th><th />
-            </tr>
-          </thead>
-          <tbody>
-            {media.map(f => {
-              const info = mediaTypeInfo(f.media_type);
-              const canDelete = isAdmin || (canUpload && f.uploaded_by === userId);
-              return (
-                <tr key={f.id}>
-                  <td>
-                    <Link to={mediaFilePath(projectId, f)} className="file-link">{f.file_name}</Link>
-                  </td>
-                  <td><span className="type-chip">{info.icon} {info.label}</span></td>
-                  <td className="num">{f.duration_sec != null ? formatDuration(f.duration_sec) : '—'}</td>
-                  <td className="num">{f.annotation_count}</td>
-                  <td>{f.uploader_name || '—'}</td>
-                  <td>{formatDate(f.created_at)}</td>
-                  <td className="row-actions">
-                    {canDelete && (
-                      <button className="btn btn-icon btn-icon--danger" title="Remove from project" onClick={() => remove(f)}>✕</button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </section>
+            {isAudio && uploads.map(u => <UploadRow key={u.key} upload={u} onDismiss={() => setUploads(us => us.filter(x => x.key !== u.key))} />)}
+
+            {files.length === 0 ? (
+              <div className="section-empty">
+                {group.none}{isAudio && canUpload ? ' Upload a recording to start annotating.' : ''}
+              </div>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    {timed && <th>Length</th>}
+                    <th>Annotations</th>
+                    <th className="col-optional">Uploaded by</th>
+                    <th className="col-optional">Added</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {files.map(f => {
+                    const canDelete = isAdmin || (canUpload && f.uploaded_by === userId);
+                    return (
+                      <tr key={f.id}>
+                        <td>
+                          <Link to={mediaFilePath(projectId, f)} className="file-link">{f.file_name}</Link>
+                        </td>
+                        {timed && <td className="num">{f.duration_sec != null ? formatDuration(f.duration_sec) : '—'}</td>}
+                        <td className="num">{f.annotation_count}</td>
+                        <td className="col-optional">{f.uploader_name || '—'}</td>
+                        <td className="col-optional">{formatDate(f.created_at)}</td>
+                        <td className="row-actions">
+                          {canDelete && (
+                            <button className="btn btn-icon btn-icon--danger" title="Remove from project" onClick={() => remove(f)}>✕</button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
@@ -281,7 +343,7 @@ function UploadRow({ upload, onDismiss }) {
 // ---------------------------------------------------------------------------
 // Members + invites
 // ---------------------------------------------------------------------------
-function MembersSection({ projectId, role, userId, onLeft }) {
+function MembersSection({ projectId, role, userId, onCount, onClose, onLeft }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -294,6 +356,7 @@ function MembersSection({ projectId, role, userId, onLeft }) {
   const load = useCallback(() =>
     apiJson(`/projects/${projectId}/members`).then(setData).catch(err => setError(err.message)), [projectId]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (data) onCount(data.members.length); }, [data, onCount]);
 
   const run = async (fn) => {
     setError(null);
@@ -321,9 +384,10 @@ function MembersSection({ projectId, role, userId, onLeft }) {
   const canManage = (m) => isAdmin && (isOwner || rank(m.role) < rank('admin'));
 
   return (
-    <section className="card section">
+    <section className="members-section">
       <div className="section-head">
         <h2 className="section-title">Members</h2>
+        <button className="btn btn-icon" title="Hide members" aria-label="Hide members" onClick={onClose}>✕</button>
       </div>
 
       {data === null ? (

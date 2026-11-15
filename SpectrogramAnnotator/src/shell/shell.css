@@ -1,7 +1,30 @@
 /* App shell: fixed-width left sidebar + scrolling main area. */
+
+/* Dark palette shared by the shell, its pages and the login screen. */
+.shell,
+.login-page {
+  --surface-0: #141516;
+  --surface-1: #1a1b1d;
+  --surface-2: #212225;
+  --surface-3: #282a2d;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --text-faint: #6b7176;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+}
+/* Not on .shell itself, so the embedded annotator keeps its own muted text. */
+.sidebar,
+.page,
+.page-loading,
+.login-page {
+  --text-muted: #8f959b;
+}
+
 .shell {
   display: flex;
   min-height: 100vh;
+  background: var(--surface-1);
 }
 
 .sidebar {
@@ -12,22 +35,21 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #262626;
-  border-right: 1px solid #1c1c1c;
+  background: var(--surface-0);
+  border-right: 1px solid var(--line);
   z-index: 200;
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 48px;
-  padding: 0 16px;
+  gap: 10px;
+  height: 52px;
+  padding: 0 18px;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text);
-  border-bottom: 1px solid #1c1c1c;
 }
 
 .sidebar-brand-mark {
@@ -36,7 +58,7 @@
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--accent-light);
   color: #fff;
   font-size: 14px;
@@ -46,18 +68,18 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 12px 8px;
+  gap: 1px;
+  padding: 8px 10px;
   overflow-y: auto;
 }
 
 .sidebar-section {
-  margin: 16px 8px 6px;
+  margin: 20px 8px 6px;
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #a8a8a8;
+  color: var(--text-faint);
 }
 
 .sidebar-link {
@@ -65,34 +87,35 @@
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  border-radius: var(--radius);
-  color: #d4d4d4;
+  border-radius: 6px;
+  color: #b4b9be;
   text-decoration: none;
   font-size: 13px;
-  transition: background 0.1s, color 0.1s;
+  transition: background 0.12s, color 0.12s;
 }
-.sidebar-link:hover { background: #333; color: #fff; }
-.sidebar-link--active { background: #3a3f42; color: #fff; box-shadow: inset 2px 0 0 var(--accent-light); }
-.sidebar-link--soon { color: #9a9a9a; }
+.sidebar-link:hover { background: rgba(255, 255, 255, 0.04); color: #fff; }
+.sidebar-link--active { background: rgba(255, 255, 255, 0.07); color: #fff; }
+.sidebar-link--active .sidebar-link-icon { color: var(--accent-mid); opacity: 1; }
+.sidebar-link--soon { color: var(--text-faint); }
 
 .sidebar-link-icon {
   width: 16px;
   text-align: center;
-  opacity: 0.85;
+  opacity: 0.7;
 }
 
 .sidebar-soon {
   margin-left: auto;
   padding: 0 6px;
-  border: 1px solid #555;
   border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
   font-size: 10px;
-  color: #a8a8a8;
+  color: var(--text-faint);
 }
 
 .sidebar-footer {
-  padding: 12px;
-  border-top: 1px solid #1c1c1c;
+  padding: 14px;
+  border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -121,7 +144,7 @@
   font-size: 12px;
   font-weight: 600;
 }
-.sidebar-avatar--pending { background: #555; }
+.sidebar-avatar--pending { background: #444; }
 
 .sidebar-user-text { min-width: 0; }
 .sidebar-user-name,
@@ -131,13 +154,26 @@
   white-space: nowrap;
 }
 .sidebar-user-name { font-size: 12px; font-weight: 600; color: var(--text); }
-.sidebar-user-email { font-size: 11px; color: #a8a8a8; }
+.sidebar-user-email { font-size: 11px; color: var(--text-muted); }
 
 .sidebar-signout { justify-content: center; }
 
 .sidebar-local {
   font-size: 11px;
-  color: #a8a8a8;
+  color: var(--text-muted);
+}
+
+/* Ghost buttons on the dark surfaces: a hairline instead of the near-white app border. */
+.shell .page .btn-ghost,
+.sidebar .btn-ghost {
+  border-color: var(--line-strong);
+  color: #c4c9ce;
+}
+.shell .page .btn-ghost:hover,
+.sidebar .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
 }
 
 .shell-main {
@@ -147,5 +183,6 @@
   flex-direction: column;
 }
 
-/* The annotator was a full-page app; inside the shell it fills the main column. */
-.shell-main > .app { flex: 1; min-height: 100vh; }
+/* The annotator was a full-page app; inside the shell it fills the main column
+   and keeps its own background. */
+.shell-main > .app { flex: 1; min-height: 100vh; background: var(--bg); }
