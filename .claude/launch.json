@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "start", "--prefix", "SpectrogramAnnotator"],
       "port": 5173
+    },
+    {
+      "name": "annotation-server",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd SpectrogramAnnotator\\annotation_server && set SPECTROGRAM_ENGINE_BIN=..\\..\\SpectrogramEngine-main\\build\\Release\\spectrogram-engine.exe&& py -m uvicorn server:app --port 8000"],
+      "port": 8000
     }
   ]
 }

@@ -34,6 +34,9 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
   const [rate, setRateState]            = useState(1);
   const [volume, setVolumeState]        = useState(1);
   const [muted, setMutedState]          = useState(false);
+  // Clip playback (the new-annotation pop-up's play / loop buttons):
+  // { start, end, loop } while a clip is playing, else null.
+  const [range, setRangeState]          = useState(null);
 
   const urlsRef      = useRef({});   // chunk index -> blob URL
   const pendingRef   = useRef({});   // chunk index -> Promise<blob URL>
@@ -45,6 +48,7 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
   const fileIdRef    = useRef(fileId);
   const metaRef      = useRef({ totalChunks, chunkDuration, fileDuration });
   const onFrameRef   = useRef(onFrame);
+  const rangeRef     = useRef(null);
   fileIdRef.current  = fileId;
   metaRef.current    = { totalChunks, chunkDuration, fileDuration };
   onFrameRef.current = onFrame;
@@ -162,7 +166,12 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
     startAt(posRef.current);
   }, [startAt, setPos]);
 
-  const pause = useCallback(() => {
+  const setRange = useCallback((r) => {
+    rangeRef.current = r;
+    setRangeState(r);
+  }, []);
+
+  const pauseInternal = useCallback(() => {
     playingRef.current = false;
     tokenRef.current++;
     setIsPlaying(false);
@@ -170,12 +179,18 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
     audioRef.current?.pause();
   }, []);
 
+  // Any manual transport action ends clip playback.
+  const pause = useCallback(() => {
+    setRange(null);
+    pauseInternal();
+  }, [setRange, pauseInternal]);
+
   const toggle = useCallback(() => {
-    if (playingRef.current) pause(); else play();
-  }, [play, pause]);
+    if (playingRef.current) pause(); else { setRange(null); play(); }
+  }, [play, pause, setRange]);
 
   // Seeking while paused only moves the position — no download until play.
-  const seek = useCallback((t) => {
+  const seekInternal = useCallback((t) => {
     const dur = metaRef.current.fileDuration || 0;
     const clamped = Math.min(dur, Math.max(0, t));
     setPos(clamped);
@@ -186,7 +201,30 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
     }
   }, [startAt, setPos]);
 
+  const seek = useCallback((t) => {
+    setRange(null);
+    seekInternal(t);
+  }, [setRange, seekInternal]);
+
   const skip = useCallback((dt) => seek(posRef.current + dt), [seek]);
+
+  // Play just [start, end] — once (then return to start, paused), or on a
+  // loop until stopped. Used to review a region before saving it.
+  const playRange = useCallback((start, end, loop = false) => {
+    if (!(end > start)) return;
+    setRange({ start, end, loop });
+    seekInternal(start);
+    play();
+  }, [setRange, seekInternal, play]);
+
+  // Stop clip playback if one is running (no-op otherwise).
+  const stopRange = useCallback(() => {
+    if (!rangeRef.current) return;
+    const { start } = rangeRef.current;
+    setRange(null);
+    pauseInternal();
+    seekInternal(start);
+  }, [setRange, pauseInternal, seekInternal]);
 
   const setRate = useCallback((r) => {
     const audio = audioRef.current;
@@ -219,6 +257,17 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
         setPos(t);
         startAt(t);
       } else {
+        const r = rangeRef.current;
+        if (r) {
+          // Clip ran to the end of the file.
+          if (r.loop) { setPos(r.start); startAt(r.start); return; }
+          rangeRef.current = null;
+          setRangeState(null);
+          playingRef.current = false;
+          setIsPlaying(false);
+          setPos(r.start);
+          return;
+        }
         playingRef.current = false;
         setIsPlaying(false);
         setPos(metaRef.current.fileDuration);
@@ -243,13 +292,25 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
     const tick = () => {
       const audio = audioRef.current;
       if (!audio.paused && srcChunkRef.current != null) {
-        setPos(srcChunkRef.current * metaRef.current.chunkDuration + audio.currentTime);
+        const t = srcChunkRef.current * metaRef.current.chunkDuration + audio.currentTime;
+        const r = rangeRef.current;
+        if (r && t >= r.end) {
+          if (r.loop) {
+            seekInternal(r.start);
+          } else {
+            setRange(null);
+            pauseInternal();
+            seekInternal(r.start);
+          }
+        } else {
+          setPos(t);
+        }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isPlaying, setPos]);
+  }, [isPlaying, setPos, seekInternal, setRange, pauseInternal]);
 
   // New file (or unmount): stop and release everything.
   useEffect(() => {
@@ -264,6 +325,8 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
       urlsRef.current = {};
       pendingRef.current = {};
       srcChunkRef.current = null;
+      rangeRef.current = null;
+      setRangeState(null);
       setIsPlaying(false);
       setIsLoading(false);
       setError(null);
@@ -276,9 +339,10 @@ export function useAudioPlayback({ fileId, totalChunks, chunkDuration, fileDurat
 
   return {
     isPlaying, isLoading, error, loadedChunks, currentChunk,
-    rate, volume, muted,
+    rate, volume, muted, range,
     positionStore,
     getPosition: () => posRef.current,
     play, pause, toggle, seek, skip, setRate, setVolume, setMuted,
+    playRange, stopRange,
   };
 }

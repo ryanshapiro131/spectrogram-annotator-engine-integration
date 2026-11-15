@@ -47,6 +47,7 @@ export default function AudioAnnotator({
 
   const tiles         = useTileViewer(chunker.fileId);
   const tileViewerRef = useRef(null);
+  const tileStackRef  = useRef(null);
   // Audio is fetched on demand (on play) in compressed chunks; the playhead
   // on the spectrogram follows playback every frame via onFrame.
   const playback      = useAudioPlayback({
@@ -84,6 +85,14 @@ export default function AudioAnnotator({
     playback.seek(time);
     tileViewerRef.current?.seekTo(time);
   }, [playback]);
+
+  // Clicking (or dragging the playhead) on the spectrogram itself: move the
+  // playback position only. The view stays put — re-centering on every
+  // click made small adjustments jumpy.
+  const handleSpectrogramSeek = useCallback((time) => {
+    playback.seek(time);
+  }, [playback]);
+  const recentlyDragged = useCallback(() => !!tileViewerRef.current?.recentlyDragged(), []);
 
   // Keybinds, unless the user is typing somewhere (label popup, layer name
   // field, manual add-annotation form, etc.):
@@ -241,13 +250,16 @@ export default function AudioAnnotator({
                   </div>
                 )}
                 {tiles.status === 'ready' && (
-                  <div className="tile-viewer-stack">
+                  <div
+                    ref={tileStackRef}
+                    className={`tile-viewer-stack ${annotateMode && canAnnotate ? 'tile-viewer-stack--annotating' : ''}`}
+                  >
                     <TileSpectrogramViewer
                       ref={tileViewerRef}
                       manifestUrl={tiles.manifestUrl}
                       tileBaseUrl={tiles.tileBaseUrl}
                       height={spectrogramSettings.specHeight}
-                      onSeek={handleSeek}
+                      onSeek={handleSpectrogramSeek}
                       onVisibleWindowChange={() => setViewTick(t => t + 1)}
                       onTileCoverageChange={() => setCoverageTick(t => t + 1)}
                     />
@@ -261,6 +273,9 @@ export default function AudioAnnotator({
                       enabled={annotateMode && canAnnotate}
                       getVisibleWindow={getVisibleWindow}
                       viewTick={viewTick}
+                      eventTargetRef={tileStackRef}
+                      recentlyDragged={recentlyDragged}
+                      playback={playback}
                     />
                   </div>
                 )}

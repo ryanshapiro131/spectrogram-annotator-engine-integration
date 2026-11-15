@@ -106,3 +106,17 @@
   border-left: 1px solid var(--border, #2a2f3a);
   white-space: nowrap;
 }
+
+/* Annotating mode: crosshair for placing start/end; dragging still pans. */
+.tile-viewer-stack--annotating .tile-spec-viewer {
+  cursor: crosshair;
+}
+.tile-viewer-stack--annotating .tile-spec-viewer:active {
+  cursor: grabbing;
+}
+/* Playhead: hovering it shows it can be dragged; dragging keeps that cursor.
+   (After the rules above, and as specific, so it wins in both modes.) */
+.tile-spec-viewer-row .tile-spec-viewer.tile-spec-viewer--playhead-hover,
+.tile-spec-viewer-row .tile-spec-viewer.tile-spec-viewer--playhead-drag {
+  cursor: ew-resize;
+}

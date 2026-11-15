@@ -1,6 +1,6 @@
 """
 Sign-in and database access for the annotation server (self-hosted
-PostgreSQL + Google sign-in; replaces the old Supabase integration).
+PostgreSQL + Google sign-in).
 
 Flow:
   1. The frontend shows Google's "Sign in with Google" button (Google
@@ -16,7 +16,7 @@ For local testing there is also a developer login (POST /auth/dev: type an
 email, no password), enabled only with DEV_LOGIN=true. Never turn it on for
 a server other people can reach: anyone could sign in as anyone.
 
-Permissions that Supabase's Row Level Security used to enforce are checked
+Project permissions are checked
 here and in projects_api.py with the has_project_role() SQL function (see
 db/schema.sql).
 
