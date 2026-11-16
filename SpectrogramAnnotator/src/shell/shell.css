@@ -186,3 +186,58 @@
 /* The annotator was a full-page app; inside the shell it fills the main column
    and keeps its own background. */
 .shell-main > .app { flex: 1; min-height: 100vh; background: var(--bg); }
+
+/* ── Collapse toggle / collapsed icon rail ── */
+.sidebar { transition: width 0.15s ease; }
+
+.sidebar-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.sidebar-toggle:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+.sidebar-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-glow); }
+
+.sidebar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar--collapsed { width: 56px; }
+.sidebar--collapsed .sidebar-text { display: none; }
+.sidebar--collapsed .sidebar-brand {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: auto;
+  padding: 12px 0 6px;
+}
+.sidebar--collapsed .sidebar-toggle { margin-left: 0; }
+.sidebar--collapsed .sidebar-nav { padding: 8px 8px; }
+.sidebar--collapsed .sidebar-link { justify-content: center; padding: 8px 0; }
+.sidebar--collapsed .sidebar-section {
+  margin: 12px 6px 8px;
+  height: 1px;
+  background: var(--line);
+}
+.sidebar--collapsed .sidebar-footer { padding: 12px 8px; align-items: center; }
+.sidebar--collapsed .sidebar-signout { padding: 4px 0; width: 32px; }
+.sidebar--collapsed .sidebar-user-text { display: none; }
+/* The product name wraps to two lines rather than truncating next to the toggle. */
+.sidebar-brand .sidebar-text {
+  white-space: normal;
+  line-height: 1.2;
+}

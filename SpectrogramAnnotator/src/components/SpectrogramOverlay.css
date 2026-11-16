@@ -22,7 +22,6 @@
   bottom: 8px;
   left: 10px;
   font-size: 10px;
-  font-family: var(--mono);
   color: rgba(255,255,255,0.45);
   background: rgba(0,0,0,0.35);
   padding: 3px 8px;
@@ -58,9 +57,19 @@
   left: 0;
 }
 
-.spec-marker--start .spec-marker-line { background: rgba(255,255,255,0.9); }
-.spec-marker--end   .spec-marker-line { background: rgba(255,255,255,0.9); }
-.spec-marker--hover .spec-marker-line { background: rgba(255,255,255,0.4); }
+/* Start/end markers are cyan so they can't be mistaken for the white
+   playhead (cyan also stands clear of the spectrogram's purple→orange
+   colormap). */
+.spec-overlay {
+  --spec-marker-color: #3ddcf0;
+  --spec-marker-color-soft: rgba(61, 220, 240, 0.5);
+}
+.spec-marker--start .spec-marker-line,
+.spec-marker--end   .spec-marker-line { background: var(--spec-marker-color); }
+.spec-marker--hover .spec-marker-line {
+  background: none;
+  border-left: 2px dashed var(--spec-marker-color-soft);
+}
 
 .spec-marker-label {
   position: absolute;
@@ -80,8 +89,13 @@
 }
 .spec-marker-label--hover {
   left: 6px;
-  color: rgba(255,255,255,0.6);
+  color: var(--spec-marker-color-soft);
   background: rgba(0,0,0,0.4);
+}
+.spec-marker-label--edge {
+  color: var(--spec-marker-color);
+  background: rgba(0,0,0,0.7);
+  border: 1px solid var(--spec-marker-color-soft);
 }
 
 /* Selected region */
@@ -89,8 +103,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  border-left: 2px solid;
-  border-right: 2px solid;
+  /* No side borders: the cyan start/end markers draw the edges. */
   pointer-events: none;
 }
 

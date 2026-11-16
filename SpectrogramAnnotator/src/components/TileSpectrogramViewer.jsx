@@ -622,6 +622,21 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       playheadRef.current = t;
       scheduleDraw();
     },
+    // Show exactly [start, end] (absolute seconds), within the zoom limits.
+    // `anchor` is the edge that stays put if the span gets clamped: 'start'
+    // when the end edge is being dragged, 'end' when the start edge is.
+    // `final` = the gesture is over (notify listeners right away).
+    setVisibleWindow(start, end, anchor = 'start', final = true) {
+      if (!manifestRef.current || !(end > start)) return;
+      const { cssW } = sizeRef.current;
+      const view = viewRef.current;
+      const { minSPP, maxSPP } = zoomRange();
+      view.secPerPx = clamp((end - start) / Math.max(1, cssW), minSPP, maxSPP);
+      view.startSec = anchor === 'end' ? end - view.secPerPx * cssW : start;
+      clampHorizontal();
+      scheduleDraw();
+      if (final) notifyVisibleWindow(); else scheduleNotify();
+    },
     // True if a pan/playhead drag ended within the last `ms` milliseconds.
     recentlyDragged(ms = 500) {
       return performance.now() - lastDragEndRef.current < ms;
@@ -639,7 +654,7 @@ const TileSpectrogramViewer = forwardRef(function TileSpectrogramViewer(
       scheduleDraw();
       notifyVisibleWindow();
     },
-  }), [scheduleDraw]);
+  }), [scheduleDraw, scheduleNotify]);
 
   function draw() {
     const manifest = manifestRef.current;

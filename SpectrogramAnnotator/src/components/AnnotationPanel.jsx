@@ -17,7 +17,11 @@ function secToAbsTime(sec) {
   return m > 0 ? `${m}:${s.padStart(5,'0')}` : s;
 }
 
-function AnnotationRow({ annotation, layerId, layerColor, canEdit = true, onUpdate, onDelete, onSeek }) {
+const PlayIcon = () => <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>;
+const StopIcon = () => <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6z" /></svg>;
+const LoopIcon = () => <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2z" /></svg>;
+
+function AnnotationRow({ annotation, layerId, layerColor, canEdit = true, onUpdate, onDelete, onSeek, playingRange, onPlayRange, onStopRange }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(annotation.name || '');
   const [start, setStart] = useState(String(annotation.start));
@@ -70,6 +74,40 @@ function AnnotationRow({ annotation, layerId, layerColor, canEdit = true, onUpda
       <span className="ann-arrow">→</span>
       <span className="ann-time">{secToAbsTime(annotation.end)}</span>
       <span className="ann-duration">{(annotation.end - annotation.start).toFixed(3)}s</span>
+      {onPlayRange && (() => {
+        // Is this annotation the clip that's playing (and which way)?
+        const active = !!playingRange && playingRange.start === annotation.start && playingRange.end === annotation.end;
+        const playingOnce = active && !playingRange.loop;
+        const looping = active && playingRange.loop;
+        const press = (loop) => (e) => {
+          e.stopPropagation();
+          if (active && playingRange.loop === loop) onStopRange?.();
+          else onPlayRange(annotation.start, annotation.end, loop);
+        };
+        return (
+          <>
+            <button
+              className={`btn btn-icon ann-play-btn ${playingOnce ? 'ann-play-btn--on' : ''}`}
+              onDoubleClick={e => e.stopPropagation()}
+              onClick={press(false)}
+              title={playingOnce ? 'Stop' : 'Play this annotation'}
+              aria-label={playingOnce ? 'Stop' : 'Play annotation'}
+            >
+              {playingOnce ? <StopIcon /> : <PlayIcon />}
+            </button>
+            <button
+              className={`btn btn-icon ann-play-btn ${looping ? 'ann-play-btn--on' : ''}`}
+              onDoubleClick={e => e.stopPropagation()}
+              onClick={press(true)}
+              title={looping ? 'Stop looping' : 'Loop this annotation'}
+              aria-label={looping ? 'Stop looping' : 'Loop annotation'}
+              aria-pressed={looping}
+            >
+              <LoopIcon />
+            </button>
+          </>
+        );
+      })()}
       {canEdit && (
         <>
           <button className="btn btn-icon" onDoubleClick={e => e.stopPropagation()} onClick={() => setEditing(true)} title="Edit">✎</button>
@@ -131,7 +169,7 @@ function LayerTab({ layer, isActive, canEdit = true, onSelect, onUpdate, onRemov
 // (color + name + count) followed by that layer's own rows, sorted by
 // start time. Rendered for every layer at once — see AnnotationPanel below
 // for why this isn't scoped to just the active layer.
-function LayerAnnotationGroup({ layer, isActive, canEditAnnotation, onUpdateAnnotation, onDeleteAnnotation, onSeek }) {
+function LayerAnnotationGroup({ layer, isActive, canEditAnnotation, onUpdateAnnotation, onDeleteAnnotation, onSeek, playingRange, onPlayRange, onStopRange }) {
   const sorted = [...layer.annotations].sort((a, b) => a.start - b.start);
 
   return (
@@ -157,6 +195,9 @@ function LayerAnnotationGroup({ layer, isActive, canEditAnnotation, onUpdateAnno
               onUpdate={onUpdateAnnotation}
               onDelete={onDeleteAnnotation}
               onSeek={onSeek}
+              playingRange={playingRange}
+              onPlayRange={onPlayRange}
+              onStopRange={onStopRange}
             />
           ))}
         </div>
@@ -169,6 +210,8 @@ export default function AnnotationPanel({
   layers, activeLayerId,
   onSelectLayer, onAddLayer, onRemoveLayer, onUpdateLayer, onToggleVisible,
   onUpdateAnnotation, onDeleteAnnotation, onSeek,
+  // Clip playback for the per-annotation play / loop buttons
+  playingRange = null, onPlayRange = null, onStopRange = null,
   // Permissions (project files; the standalone annotator allows everything)
   canCreate = true, canEditLayer = () => true, canEditAnnotation = () => true,
 }) {
@@ -221,6 +264,9 @@ export default function AnnotationPanel({
             onUpdateAnnotation={onUpdateAnnotation}
             onDeleteAnnotation={onDeleteAnnotation}
             onSeek={onSeek}
+            playingRange={playingRange}
+            onPlayRange={onPlayRange}
+            onStopRange={onStopRange}
           />
         ))}
       </div>

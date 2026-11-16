@@ -174,7 +174,6 @@
   border-radius: var(--radius);
   background: transparent;
   color: var(--text);
-  font-family: var(--mono);
   font-size: 11px;
   cursor: pointer;
 }

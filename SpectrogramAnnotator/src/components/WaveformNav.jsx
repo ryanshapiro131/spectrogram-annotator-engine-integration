@@ -31,6 +31,8 @@ function paintRanges(states, ranges, value, width, fileDuration) {
   }
 }
 
+const EDGE_GRAB_PX = 6; // px either side of a viewport-box edge that grab it for resizing
+
 const PENDING = 1;
 const LOADED  = 2;
 
@@ -42,12 +44,14 @@ const LOADED  = 2;
  *   at the viewer's current zoom level are full color, tiles still in flight
  *   are amber, and anything the viewer hasn't fetched yet is gray.
  * - The viewport rectangle is the viewer's visible window; click/drag
- *   anywhere to seek.
+ *   anywhere to seek, or drag either edge of the box to set the window's
+ *   start / end (zooming the spectrogram to match).
  */
 export default function WaveformNav({
   overview, overviewStatus,
   fileDuration,
   onSeek,
+  onSetWindow,      // (start, end, anchor, final) => void — set the viewer's visible window
   getVisibleWindow, // () => { start, end } — the spectrogram viewer's current pan/zoom window, in absolute seconds
   getTileCoverage,  // () => { loaded: [[s,e]...], pending: [[s,e]...] } — from the spectrogram viewer
   viewTick,         // bumped whenever the spectrogram viewer pans/zooms, to re-trigger this draw
@@ -56,7 +60,9 @@ export default function WaveformNav({
   const canvasRef   = useRef(null);
   const wrapRef     = useRef(null);
   const [width, setWidth]     = useState(0);
+  // false | 'seek' | 'start' | 'end' (an edge of the viewport box)
   const [dragging, setDragging] = useState(false);
+  const [edgeHover, setEdgeHover] = useState(false);
   const [hoverTime, setHoverTime] = useState(null);
 
   const HEIGHT = 64;
@@ -144,6 +150,14 @@ export default function WaveformNav({
       ctx.strokeStyle = colors.viewport;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(x1 + 0.75, 0.75, Math.max(1, x2 - x1 - 1.5), HEIGHT - 1.5);
+
+      // Grips on both edges, to show they can be dragged
+      if (onSetWindow) {
+        ctx.fillStyle = colors.viewport;
+        const gh = 18, gy = mid - gh / 2;
+        ctx.fillRect(x1 - 1, gy, 3, gh);
+        ctx.fillRect(x2 - 2, gy, 3, gh);
+      }
     }
 
     // Hover cursor line
@@ -158,7 +172,7 @@ export default function WaveformNav({
       ctx.globalAlpha = 1;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overview, width, fileDuration, hoverTime, getVisibleWindow, getTileCoverage, viewTick, coverageTick]);
+  }, [overview, width, fileDuration, hoverTime, getVisibleWindow, getTileCoverage, onSetWindow, viewTick, coverageTick]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -171,28 +185,61 @@ export default function WaveformNav({
     return frac * fileDuration;
   }, [fileDuration]);
 
+  // Which viewport-box edge (if any) is under clientX: 'start' | 'end' | null.
+  const edgeAt = useCallback((clientX) => {
+    if (!onSetWindow || !fileDuration || typeof getVisibleWindow !== 'function') return null;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const win = getVisibleWindow();
+    const x1 = (win.start / fileDuration) * rect.width;
+    const x2 = (win.end / fileDuration) * rect.width;
+    const d1 = Math.abs(x - x1), d2 = Math.abs(x - x2);
+    if (Math.min(d1, d2) > EDGE_GRAB_PX) return null;
+    if (d1 === d2) return x < x1 ? 'start' : 'end'; // box narrower than the grab zone
+    return d1 < d2 ? 'start' : 'end';
+  }, [onSetWindow, fileDuration, getVisibleWindow]);
+
   const handlePointerDown = useCallback((e) => {
-    if (!fileDuration) return;
-    setDragging(true);
+    if (!fileDuration || e.button !== 0) return;
+    e.preventDefault();
+    const edge = edgeAt(e.clientX);
+    if (edge) { setDragging(edge); return; }
+    setDragging('seek');
     onSeek(timeFromClientX(e.clientX));
-  }, [fileDuration, onSeek, timeFromClientX]);
+  }, [fileDuration, onSeek, timeFromClientX, edgeAt]);
 
   useEffect(() => {
     if (!dragging) return;
-    const handleMove = (e) => onSeek(timeFromClientX(e.clientX));
-    const handleUp    = () => setDragging(false);
+    // Resizing: move the dragged edge, keep the other one fixed. A minimum
+    // span keeps the edges from crossing (the viewer clamps zoom further).
+    const resize = (e, final) => {
+      const win = getVisibleWindow();
+      const t = timeFromClientX(e.clientX);
+      const minSpan = fileDuration / Math.max(1, width) * 4;
+      if (dragging === 'start') onSetWindow(Math.min(t, win.end - minSpan), win.end, 'end', final);
+      else onSetWindow(win.start, Math.max(t, win.start + minSpan), 'start', final);
+    };
+    const handleMove = (e) => {
+      if (dragging === 'seek') onSeek(timeFromClientX(e.clientX));
+      else resize(e, false);
+    };
+    const handleUp = (e) => {
+      if (dragging !== 'seek') resize(e, true);
+      setDragging(false);
+    };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
     return () => {
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-  }, [dragging, onSeek, timeFromClientX]);
+  }, [dragging, onSeek, onSetWindow, getVisibleWindow, timeFromClientX, fileDuration, width]);
 
   const handleMouseMove = useCallback((e) => {
     if (!fileDuration) return;
     setHoverTime(timeFromClientX(e.clientX));
-  }, [fileDuration, timeFromClientX]);
+    setEdgeHover(!!edgeAt(e.clientX));
+  }, [fileDuration, timeFromClientX, edgeAt]);
 
   const win = typeof getVisibleWindow === 'function' ? getVisibleWindow() : { start: 0, end: fileDuration };
 
@@ -213,10 +260,10 @@ export default function WaveformNav({
       <div className="waveform-nav-canvas-wrap" ref={wrapRef}>
         <canvas
           ref={canvasRef}
-          className="waveform-nav-canvas"
+          className={`waveform-nav-canvas ${edgeHover || dragging === 'start' || dragging === 'end' ? 'waveform-nav-canvas--edge' : ''}`}
           onPointerDown={handlePointerDown}
           onMouseMove={handleMouseMove}
-          onMouseLeave={() => setHoverTime(null)}
+          onMouseLeave={() => { setHoverTime(null); setEdgeHover(false); }}
         />
       </div>
     </div>
