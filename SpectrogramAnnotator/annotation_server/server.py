@@ -31,20 +31,31 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import librosa
 import numpy as np
 import soundfile as sf
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+# Imported before ENGINE_BIN is read: app_auth loads annotation_server/.env.
+from app_auth import AuthUser, current_user, register_media_file
+from app_auth import router as auth_router
+from projects_api import router as projects_router
 
 CHUNK_DURATION = 180
-CACHE_DIR      = Path(tempfile.gettempdir()) / "spectrogram_cache"
-CACHE_DIR.mkdir(exist_ok=True)
+# Decoded WAVs (~1.4 GB per hour of stereo audio) and tile pyramids (~1.2 GB)
+# live here, and every tile request is a read from it — put it on fast local
+# disk, not network storage. Override with SPECTROGRAM_CACHE_DIR.
+CACHE_DIR      = Path(os.environ.get("SPECTROGRAM_CACHE_DIR") or Path(tempfile.gettempdir()) / "spectrogram_cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+print(f"[server] cache dir: {CACHE_DIR}")
 
 # Where per-file tile pyramids + manifest.json live. Mounted below as static
 # files at /tiles/{file_id}/... so the frontend fetches them directly with no
@@ -71,15 +82,16 @@ app = FastAPI(title="Spectrogram Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",
-        "http://152.20.12.100:8000", "http://152.20.12.100:5173"
-    ],
+    # Any port on localhost / 127.0.0.1 / the lab server. Add more hosts with
+    # CORS_EXTRA_ORIGINS (comma-separated full origins, e.g. http://10.0.0.5:5173).
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|152\.20\.12\.219)(:\d+)?$",
+    allow_origins=[o.strip() for o in os.environ.get("CORS_EXTRA_ORIGINS", "").split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
+app.include_router(projects_router)
 
 _registry: dict[str, dict] = {}
 _registry_lock = threading.Lock()
@@ -90,6 +102,8 @@ _registry_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _file_id(data: bytes) -> str:
+    # The frontend computes the same id (src/workers/sha1.worker.js) to ask
+    # GET /files/{file_id} whether it can skip the upload — keep them in sync.
     return hashlib.sha1(data).hexdigest()[:16]
 
 
@@ -102,12 +116,35 @@ def _cache_path(file_id: str, kind: str, chunk: int) -> Path:
     return CACHE_DIR / f"{file_id}_{kind}_{chunk}"
 
 
+def _meta_path(file_id: str) -> Path:
+    return CACHE_DIR / f"{file_id}_meta.json"
+
+
+def _lookup(file_id: str) -> dict | None:
+    """
+    The file's metadata if its decoded WAV is still cached, else None.
+    The registry lives in memory, so after a server restart it's rebuilt
+    from the <file_id>_meta.json written at upload — that's what lets a
+    previously uploaded file skip re-uploading (GET /files/{file_id}).
+    """
+    with _registry_lock:
+        meta = _registry.get(file_id)
+        if meta is None and _meta_path(file_id).exists():
+            try:
+                meta = json.loads(_meta_path(file_id).read_text()) | {"tiles_status": "idle"}
+            except (OSError, ValueError):
+                meta = None
+            if meta is not None:
+                _registry[file_id] = meta
+    if meta is None or not _wav_path(file_id).exists():
+        return None
+    return meta
+
+
 def _get_meta(file_id: str) -> dict:
-    meta = _registry.get(file_id)
+    meta = _lookup(file_id)
     if meta is None:
         raise HTTPException(404, "File not found. Please re-upload.")
-    if not _wav_path(file_id).exists():
-        raise HTTPException(410, "Cache expired. Please re-upload.")
     return meta
 
 
@@ -250,12 +287,14 @@ def _run_engine(file_id: str) -> None:
     _set_tiles_status(file_id, "running")
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
+        t0 = time.perf_counter()
         subprocess.run(
             [str(_engine_bin_path), str(_wav_path(file_id)), str(out_dir)],
             check=True, capture_output=True, timeout=3600, text=True,
         )
         if not _tiles_manifest_path(file_id).exists():
             raise RuntimeError("engine exited cleanly but wrote no manifest.json")
+        print(f"[server] {file_id}: tiles generated in {time.perf_counter() - t0:.1f}s")
         _set_tiles_status(file_id, "ready")
     except subprocess.CalledProcessError as exc:
         _set_tiles_status(file_id, "error", exc.stderr[-2000:] if exc.stderr else str(exc))
@@ -285,6 +324,8 @@ async def upload(
     hop_length: int   = Query(160),
     n_mels:     int   = Query(128),
     top_db:     float = Query(80.0),
+    project_id: str | None = Query(None, description="Project (UUID) to register this file in"),
+    user: AuthUser | None = Depends(current_user),
 ):
     """
     Receive audio, transcode to WAV, cache to disk.
@@ -293,10 +334,12 @@ async def upload(
     request uses soundfile.seek() on an uncompressed WAV, so seek time
     is O(1) for chunk 1 and chunk 500 alike.
     """
+    t_start = time.perf_counter()
     data    = await file.read()
     file_id = _file_id(data)
+    t_received = time.perf_counter()
 
-    if file_id not in _registry:
+    if _lookup(file_id) is None:
         wav_path = _wav_path(file_id)
 
         # Try reading directly with soundfile first (WAV, FLAC, OGG, AIFF…)
@@ -314,9 +357,16 @@ async def upload(
             except Exception as exc:
                 raise HTTPException(422, f"Could not decode audio: {exc}")
 
+        t_decoded = time.perf_counter()
         # Always write as 32-bit float WAV — perfect quality, O(1) seeks
         sf.write(str(wav_path), y, sr, subtype="FLOAT")
         del y  # free RAM immediately
+        t_written = time.perf_counter()
+        print(
+            f"[server] {file_id}: upload received {t_received - t_start:.1f}s, "
+            f"decode {t_decoded - t_received:.1f}s, write WAV {t_written - t_decoded:.1f}s "
+            f"({wav_path.stat().st_size / 1e9:.2f} GB)"
+        )
 
         n_frames     = sf.info(str(wav_path)).frames
         n_channels   = sf.info(str(wav_path)).channels
@@ -335,33 +385,108 @@ async def upload(
             "top_db":       top_db,
             "tiles_status": "idle",
         }
+        meta = {k: v for k, v in _registry[file_id].items() if not k.startswith("tiles_")}
+        _meta_path(file_id).write_text(json.dumps(meta))
 
+    return await _file_response(file_id, project_id, user)
+
+
+@app.get("/files/{file_id}")
+async def get_file(
+    file_id: str,
+    project_id: str | None = Query(None, description="Project (UUID) to register this file in"),
+    user: AuthUser | None = Depends(current_user),
+):
+    """
+    Open a file the server already has, without uploading it again. The
+    frontend hashes the file locally and calls this first; 404 means it
+    needs to upload. Same response as POST /upload.
+    """
+    if _lookup(file_id) is None:
+        raise HTTPException(404, "Not on the server. Upload it.")
+    return await _file_response(file_id, project_id, user)
+
+
+async def _file_response(file_id: str, project_id: str | None, user: AuthUser | None) -> JSONResponse:
     # Kick off (or resume) tile pyramid generation. Idempotent: no-ops if
     # already running/ready for this file_id, and skips straight to "ready"
     # if a manifest from a prior run is still on disk.
     _start_tile_generation(file_id)
 
-    return JSONResponse(_registry[file_id] | {"file_id": file_id})
+    # Link the audio to a project (a media_files row) so annotations can reference it.
+    # Done after decoding so duration/sample-rate come from the real audio.
+    media_file = None
+    if project_id:
+        if user is None:
+            raise HTTPException(401, "Sign in to add files to a project.")
+        media_file = await run_in_threadpool(register_media_file, user, project_id, file_id, _registry[file_id])
+
+    return JSONResponse(_registry[file_id] | {
+        "file_id":       file_id,
+        "media_file_id": media_file["id"] if media_file else None,
+    })
 
 
 @app.get("/chunk/{file_id}/{chunk_index}")
-def get_chunk_wav(file_id: str, chunk_index: int):
-    """Return (and cache) a WAV blob for the requested chunk."""
-    cache = _cache_path(file_id, "wav", chunk_index)
+def get_chunk_audio(
+    file_id: str,
+    chunk_index: int,
+    format: str = Query("ogg", pattern="^(ogg|mp3)$"),
+    _user=Depends(current_user),
+):
+    """
+    Return (and cache) one chunk's audio for playback, compressed: a
+    3-minute stereo chunk is ~3 MB as Ogg Vorbis vs ~30 MB as WAV. Vorbis is
+    the default because Ogg timestamps are sample-accurate (the playhead
+    must line up with annotations); mp3 is for browsers without Ogg support.
+    Falls back to 16-bit WAV if the encoder rejects the recording (e.g. a
+    sample rate MP3 can't represent).
+    """
+    if not 0 <= chunk_index < _get_meta(file_id)["total_chunks"]:
+        raise HTTPException(404, "Chunk index out of range.")
+    fmt, subtype, media_type = _CHUNK_FORMATS[format]
+    cache    = _cache_path(file_id, f"chunk_{format}", chunk_index)
+    fallback = _cache_path(file_id, "chunk_wav", chunk_index)
     if cache.exists():
-        return Response(content=cache.read_bytes(), media_type="audio/wav")
+        return FileResponse(cache, media_type=media_type)
+    if fallback.exists():
+        return FileResponse(fallback, media_type="audio/wav")
 
     frames, sr = _read_chunk(file_id, chunk_index, mono=False)
-    buf        = io.BytesIO()
-    sf.write(buf, frames, sr, format="WAV", subtype="PCM_16")
-    buf.seek(0)
-    wav_bytes = buf.read()
-    cache.write_bytes(wav_bytes)
-    return Response(content=wav_bytes, media_type="audio/wav")
+    try:
+        _write_audio_atomic(cache, frames, sr, fmt, subtype)
+        return FileResponse(cache, media_type=media_type)
+    except Exception as exc:
+        print(f"[server] {file_id} chunk {chunk_index}: {format} encode failed ({exc}); serving WAV")
+        _write_audio_atomic(fallback, frames, sr, "WAV", "PCM_16")
+        return FileResponse(fallback, media_type="audio/wav")
+
+
+_CHUNK_FORMATS = {
+    "ogg": ("OGG", "VORBIS", "audio/ogg"),
+    "mp3": ("MP3", "MPEG_LAYER_III", "audio/mpeg"),
+}
+
+
+def _write_audio_atomic(path: Path, frames: np.ndarray, sr: int, fmt: str, subtype: str) -> None:
+    """Encode to a temp file, then rename, so a concurrent request for the
+    same chunk never serves a half-written file. Written in 5-second blocks:
+    libsndfile's Vorbis encoder crashes the process on one huge write."""
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".part")
+    os.close(fd)
+    try:
+        with sf.SoundFile(tmp, "w", sr, frames.shape[1], format=fmt, subtype=subtype) as f:
+            block = sr * 5
+            for i in range(0, len(frames), block):
+                f.write(frames[i:i + block])
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 @app.get("/sxx/{file_id}/{chunk_index}")
-def get_sxx(file_id: str, chunk_index: int):
+def get_sxx(file_id: str, chunk_index: int, _user=Depends(current_user)):
     """
     Return the full sxx matrix as JSON.
     Computed once and cached to disk; repeat requests are instant reads.
@@ -380,7 +505,8 @@ def get_sxx(file_id: str, chunk_index: int):
 
 
 @app.get("/overview/{file_id}")
-def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000)):
+def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000),
+                 _user=Depends(current_user)):
     """
     Return a downsampled RMS waveform for the whole file — used to render
     the full-file navigation strip (color = loaded, gray = not yet loaded).
@@ -405,7 +531,7 @@ def get_overview(file_id: str, num_points: int = Query(2000, ge=100, le=8000)):
 
 
 @app.get("/tiles-status/{file_id}")
-def get_tiles_status(file_id: str):
+def get_tiles_status(file_id: str, _user=Depends(current_user)):
     """
     Poll this after upload. status is one of:
       idle | pending | running | ready | error
@@ -427,7 +553,7 @@ def health():
 
 
 @app.delete("/file/{file_id}")
-def evict_file(file_id: str):
+def evict_file(file_id: str, _user=Depends(current_user)):
     _registry.pop(file_id, None)
     for p in CACHE_DIR.glob(f"{file_id}_*"):
         p.unlink(missing_ok=True)
@@ -438,11 +564,27 @@ def evict_file(file_id: str):
     return {"deleted": file_id}
 
 
+class _TileFiles(StaticFiles):
+    """Static tiles with browser caching. A tile's content never changes for a
+    given file_id (a content hash), so the browser can keep it for a day
+    instead of re-requesting it on every reload. manifest.json stays
+    uncached — it's what flips from missing to present when generation ends."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith(".png") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=86400"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Serve tile pyramids + manifest.json as plain static files — this is the
 # whole point of the engine integration: zero server-side work per tile
 # request, just disk reads. Mounted last so it doesn't shadow the API routes
-# above.
-app.mount("/tiles", StaticFiles(directory=str(TILES_DIR)), name="tiles")
+# above. NOT behind auth, so tiles stay plain cacheable GETs. file_ids are
+# content hashes, so they're not guessable without already having the audio.
+app.mount("/tiles", _TileFiles(directory=str(TILES_DIR)), name="tiles")
 
 
 if __name__ == "__main__":

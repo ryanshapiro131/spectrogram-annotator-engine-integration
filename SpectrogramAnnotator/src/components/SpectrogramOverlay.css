@@ -7,20 +7,13 @@
      this overlay's width always matches the canvas underneath it, not the
      sidebar next to it. */
   right: 46px;
-  /* Pass through to the underlying spectrogram (native click-to-seek, zoom,
-     etc.) unless annotation mode is explicitly enabled. */
+  /* Always pass through to the spectrogram underneath (click to move the
+     playhead, drag to pan, wheel to zoom) — in Annotating mode too. The
+     overlay listens for double-clicks on its wrapper instead; only the
+     label pop-up takes pointer events itself. */
   pointer-events: none;
   z-index: 10;
   user-select: none;
-}
-
-.spec-overlay--enabled {
-  pointer-events: auto;
-}
-
-.spec-overlay--enabled:hover,
-.spec-overlay--active {
-  cursor: crosshair;
 }
 
 /* Dim hint in bottom-left — only visible on hover */
@@ -29,7 +22,6 @@
   bottom: 8px;
   left: 10px;
   font-size: 10px;
-  font-family: var(--mono);
   color: rgba(255,255,255,0.45);
   background: rgba(0,0,0,0.35);
   padding: 3px 8px;
@@ -39,7 +31,7 @@
   transition: opacity 0.15s;
   white-space: nowrap;
 }
-.spec-overlay:hover .spec-overlay-hint {
+.spec-overlay--hover .spec-overlay-hint {
   opacity: 1;
 }
 .spec-overlay-hint--active {
@@ -65,9 +57,19 @@
   left: 0;
 }
 
-.spec-marker--start .spec-marker-line { background: rgba(255,255,255,0.9); }
-.spec-marker--end   .spec-marker-line { background: rgba(255,255,255,0.9); }
-.spec-marker--hover .spec-marker-line { background: rgba(255,255,255,0.4); }
+/* Start/end markers are cyan so they can't be mistaken for the white
+   playhead (cyan also stands clear of the spectrogram's purple→orange
+   colormap). */
+.spec-overlay {
+  --spec-marker-color: #3ddcf0;
+  --spec-marker-color-soft: rgba(61, 220, 240, 0.5);
+}
+.spec-marker--start .spec-marker-line,
+.spec-marker--end   .spec-marker-line { background: var(--spec-marker-color); }
+.spec-marker--hover .spec-marker-line {
+  background: none;
+  border-left: 2px dashed var(--spec-marker-color-soft);
+}
 
 .spec-marker-label {
   position: absolute;
@@ -87,8 +89,13 @@
 }
 .spec-marker-label--hover {
   left: 6px;
-  color: rgba(255,255,255,0.6);
+  color: var(--spec-marker-color-soft);
   background: rgba(0,0,0,0.4);
+}
+.spec-marker-label--edge {
+  color: var(--spec-marker-color);
+  background: rgba(0,0,0,0.7);
+  border: 1px solid var(--spec-marker-color-soft);
 }
 
 /* Selected region */
@@ -96,8 +103,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  border-left: 2px solid;
-  border-right: 2px solid;
+  /* No side borders: the cyan start/end markers draw the edges. */
   pointer-events: none;
 }
 
@@ -276,4 +282,34 @@
   font-size: 10px;
   color: var(--text-dim);
   flex-shrink: 0;
+}
+/* Play-once / loop buttons for reviewing the new region before saving */
+.spec-popup-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.spec-popup-play:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.spec-popup-play--on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.spec-popup-play--on:hover { color: #fff; }
+.spec-popup-play:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }

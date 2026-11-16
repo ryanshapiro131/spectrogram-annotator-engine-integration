@@ -56,3 +56,8 @@
   cursor: pointer;
   touch-action: none;
 }
+
+/* Hovering / dragging an edge of the viewport box resizes the window */
+.waveform-nav-canvas--edge {
+  cursor: ew-resize;
+}

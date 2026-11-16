@@ -1,0 +1,243 @@
+/* App shell: fixed-width left sidebar + scrolling main area. */
+
+/* Dark palette shared by the shell, its pages and the login screen. */
+.shell,
+.login-page {
+  --surface-0: #141516;
+  --surface-1: #1a1b1d;
+  --surface-2: #212225;
+  --surface-3: #282a2d;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --text-faint: #6b7176;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+}
+/* Not on .shell itself, so the embedded annotator keeps its own muted text. */
+.sidebar,
+.page,
+.page-loading,
+.login-page {
+  --text-muted: #8f959b;
+}
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--surface-1);
+}
+
+.sidebar {
+  width: 216px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-0);
+  border-right: 1px solid var(--line);
+  z-index: 200;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.sidebar-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--accent-light);
+  color: #fff;
+  font-size: 14px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  margin: 20px 8px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: #b4b9be;
+  text-decoration: none;
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s;
+}
+.sidebar-link:hover { background: rgba(255, 255, 255, 0.04); color: #fff; }
+.sidebar-link--active { background: rgba(255, 255, 255, 0.07); color: #fff; }
+.sidebar-link--active .sidebar-link-icon { color: var(--accent-mid); opacity: 1; }
+.sidebar-link--soon { color: var(--text-faint); }
+
+.sidebar-link-icon {
+  width: 16px;
+  text-align: center;
+  opacity: 0.7;
+}
+
+.sidebar-soon {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.sidebar-footer {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.sidebar-avatar--initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-light);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sidebar-avatar--pending { background: #444; }
+
+.sidebar-user-text { min-width: 0; }
+.sidebar-user-name,
+.sidebar-user-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-user-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.sidebar-user-email { font-size: 11px; color: var(--text-muted); }
+
+.sidebar-signout { justify-content: center; }
+
+.sidebar-local {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Ghost buttons on the dark surfaces: a hairline instead of the near-white app border. */
+.shell .page .btn-ghost,
+.sidebar .btn-ghost {
+  border-color: var(--line-strong);
+  color: #c4c9ce;
+}
+.shell .page .btn-ghost:hover,
+.sidebar .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The annotator was a full-page app; inside the shell it fills the main column
+   and keeps its own background. */
+.shell-main > .app { flex: 1; min-height: 100vh; background: var(--bg); }
+
+/* ── Collapse toggle / collapsed icon rail ── */
+.sidebar { transition: width 0.15s ease; }
+
+.sidebar-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.sidebar-toggle:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+.sidebar-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-glow); }
+
+.sidebar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar--collapsed { width: 56px; }
+.sidebar--collapsed .sidebar-text { display: none; }
+.sidebar--collapsed .sidebar-brand {
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: auto;
+  padding: 12px 0 6px;
+}
+.sidebar--collapsed .sidebar-toggle { margin-left: 0; }
+.sidebar--collapsed .sidebar-nav { padding: 8px 8px; }
+.sidebar--collapsed .sidebar-link { justify-content: center; padding: 8px 0; }
+.sidebar--collapsed .sidebar-section {
+  margin: 12px 6px 8px;
+  height: 1px;
+  background: var(--line);
+}
+.sidebar--collapsed .sidebar-footer { padding: 12px 8px; align-items: center; }
+.sidebar--collapsed .sidebar-signout { padding: 4px 0; width: 32px; }
+.sidebar--collapsed .sidebar-user-text { display: none; }
+/* The product name wraps to two lines rather than truncating next to the toggle. */
+.sidebar-brand .sidebar-text {
+  white-space: normal;
+  line-height: 1.2;
+}

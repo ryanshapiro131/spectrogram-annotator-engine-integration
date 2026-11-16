@@ -102,7 +102,7 @@
   color: var(--text-muted);
   min-width: 18px;
   text-align: center;
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
 }
 .layer-tab--active .layer-count {
   background: var(--accent-light);
@@ -165,7 +165,6 @@
 
 .layer-control-item span {
   color: var(--accent);
-  font-family: var(--mono);
   font-size: 11px;
   min-width: 30px;
 }
@@ -289,7 +288,7 @@
 .ann-count {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .ann-empty {
@@ -441,4 +440,15 @@
 .ann-row {
   border-left: 3px solid transparent;
   padding-left: 9px !important;
+}
+/* Per-annotation play-once / loop buttons */
+.ann-play-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ann-play-btn--on,
+.ann-play-btn--on:hover {
+  color: #fff;
+  background: var(--accent);
 }
