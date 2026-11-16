@@ -279,7 +279,7 @@ export default function SpectrogramOverlay({
       {startX !== null && (
         <div className="spec-marker spec-marker--start" style={{ left: startX }}>
           <div className="spec-marker-line" />
-          <div className="spec-marker-label">{secToDisplay(startTime)}</div>
+          <div className="spec-marker-label spec-marker-label--edge">Start {secToDisplay(startTime)}</div>
         </div>
       )}
 
@@ -287,8 +287,8 @@ export default function SpectrogramOverlay({
       {endX !== null && (
         <div className="spec-marker spec-marker--end" style={{ left: endX }}>
           <div className="spec-marker-line" />
-          <div className="spec-marker-label spec-marker-label--end">
-            {secToDisplay(endTime)}
+          <div className="spec-marker-label spec-marker-label--end spec-marker-label--edge">
+            End {secToDisplay(endTime)}
           </div>
         </div>
       )}
@@ -311,7 +311,7 @@ export default function SpectrogramOverlay({
         <div className="spec-marker spec-marker--hover" style={{ left: hoverX }}>
           <div className="spec-marker-line" />
           <div className="spec-marker-label spec-marker-label--hover">
-            {secToDisplay(hoverTime)}
+            End {secToDisplay(hoverTime)}
           </div>
         </div>
       )}

@@ -94,6 +94,24 @@ export default function AudioAnnotator({
   }, [playback]);
   const recentlyDragged = useCallback(() => !!tileViewerRef.current?.recentlyDragged(), []);
 
+  // Waveform nav: dragging an edge of its viewport box sets the window.
+  const handleSetWindow = useCallback((start, end, anchor, final) => {
+    tileViewerRef.current?.setVisibleWindow(start, end, anchor, final);
+  }, []);
+
+  // Play / loop a saved annotation from the list. If its start isn't on
+  // screen, bring it into view first so the playhead can be followed.
+  const handlePlayRange = useCallback((start, end, loop) => {
+    const win = tileViewerRef.current?.getVisibleWindow();
+    if (win && (start < win.start || start > win.end)) {
+      const span = win.end - win.start;
+      // Fit the region if it fits at the current zoom, else start near the left.
+      const left = end - start <= span * 0.9 ? (start + end) / 2 - span / 2 : start - span * 0.05;
+      tileViewerRef.current.setVisibleWindow(left, left + span);
+    }
+    playback.playRange(start, end, loop);
+  }, [playback]);
+
   // Keybinds, unless the user is typing somewhere (label popup, layer name
   // field, manual add-annotation form, etc.):
   //   A      toggle annotate mode
@@ -225,6 +243,7 @@ export default function AudioAnnotator({
                   overviewStatus={chunker.overviewStatus}
                   fileDuration={chunker.fileDuration}
                   onSeek={handleSeek}
+                  onSetWindow={handleSetWindow}
                   getVisibleWindow={getVisibleWindow}
                   getTileCoverage={() => tileViewerRef.current?.getTileCoverage() || null}
                   viewTick={viewTick}
@@ -300,6 +319,9 @@ export default function AudioAnnotator({
               onUpdateAnnotation={store.updateAnnotation}
               onDeleteAnnotation={store.deleteAnnotation}
               onSeek={handleSeek}
+              playingRange={playback.range}
+              onPlayRange={handlePlayRange}
+              onStopRange={playback.stopRange}
               canCreate={canAnnotate}
               canEditLayer={store.canEditLayer}
               canEditAnnotation={store.canEditAnnotation}
