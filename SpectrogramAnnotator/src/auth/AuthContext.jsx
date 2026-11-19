@@ -17,7 +17,9 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const navigate = useNavigate();
   const [status, setStatus] = useState('loading');
-  const [config, setConfig] = useState({ auth_enabled: false, google_client_id: '', dev_login: false });
+  const [config, setConfig] = useState({
+    auth_enabled: false, google_client_id: '', dev_login: false, password_login: false, password_signup: false,
+  });
   const [user, setUser] = useState(null);
 
   useEffect(() => {
@@ -58,7 +60,7 @@ export function AuthProvider({ children }) {
     return () => setUnauthorizedHandler(null);
   }, [navigate]);
 
-  // The reply of /auth/google or /auth/dev.
+  // The reply of /auth/google, /auth/password(/setup) or /auth/dev.
   const signIn = useCallback(({ token, user: u }) => {
     setToken(token);
     setUser(u);

@@ -62,6 +62,27 @@ export default function LoginPage() {
           />
         )}
 
+        {config.password_login && (
+          <PasswordForm
+            busy={busy}
+            allowRegister={config.password_signup}
+            onSubmit={async (mode, fields) => {
+              setError(null);
+              setBusy(true);
+              try {
+                signIn(await apiJson(mode === 'register' ? '/auth/password/register' : '/auth/password', {
+                  method: 'POST', json: fields, redirectOn401: false,
+                }));
+              } catch (err) {
+                setError(err.message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+            onModeChange={() => setError(null)}
+          />
+        )}
+
         {config.dev_login && (
           <DevLoginForm
             busy={busy}
@@ -108,6 +129,83 @@ function GoogleButton({ clientId, onCredential, onError }) {
   }, [clientId, onError]);
 
   return <div className="login-google" ref={ref} />;
+}
+
+const MIN_PASSWORD = 8;
+
+// Email + password: sign in, or (when the server allows it) create an
+// account. A new account sees no projects until it creates one or a
+// project admin adds it.
+function PasswordForm({ busy, allowRegister, onSubmit, onModeChange }) {
+  const [mode, setMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [name, setName] = useState('');
+  const [problem, setProblem] = useState(null);
+  const register = mode === 'register';
+
+  const switchMode = (m) => {
+    setMode(m);
+    setPassword('');
+    setConfirm('');
+    setProblem(null);
+    onModeChange();
+  };
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (register) {
+      if (password.length < MIN_PASSWORD) return setProblem(`Use at least ${MIN_PASSWORD} characters.`);
+      if (password !== confirm) return setProblem("The passwords don't match.");
+    }
+    setProblem(null);
+    onSubmit(mode, register
+      ? { email: email.trim(), password, display_name: name.trim() || null }
+      : { email: email.trim(), password });
+  };
+
+  return (
+    <form className="login-password" onSubmit={submit}>
+      {register && (
+        <p className="login-password-note">
+          Create your account. To join a project, give a project admin the email you use here.
+        </p>
+      )}
+      <label className="form-field">
+        <span>Email</span>
+        <input type="email" required autoComplete="username" value={email}
+          onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+      </label>
+      <label className="form-field">
+        <span>{register ? 'Choose a password' : 'Password'}</span>
+        <input type="password" required autoComplete={register ? 'new-password' : 'current-password'}
+          minLength={register ? MIN_PASSWORD : undefined} value={password} onChange={e => setPassword(e.target.value)} />
+      </label>
+      {register && (
+        <>
+          <label className="form-field">
+            <span>Repeat the password</span>
+            <input type="password" required autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} />
+          </label>
+          <label className="form-field">
+            <span>Your name <em>(optional, shown to your team)</em></span>
+            <input type="text" autoComplete="name" value={name} onChange={e => setName(e.target.value)} maxLength={100} />
+          </label>
+        </>
+      )}
+      {problem && <div className="form-error" role="alert">{problem}</div>}
+      <button className="btn btn-solid" type="submit" disabled={busy || !email.trim() || !password}>
+        {busy ? (register ? 'Creating account…' : 'Signing in…') : (register ? 'Create account' : 'Sign in')}
+      </button>
+      {allowRegister && (
+        <button type="button" className="login-switch" onClick={() => switchMode(register ? 'signin' : 'register')}>
+          {register ? 'Already have an account? Sign in' : 'New here? Create an account'}
+        </button>
+      )}
+      {!register && <p className="login-password-note">Forgot your password? Ask the server administrator to reset it.</p>}
+    </form>
+  );
 }
 
 function DevLoginForm({ busy, onSubmit }) {

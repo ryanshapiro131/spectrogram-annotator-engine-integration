@@ -197,8 +197,10 @@ def list_members(project_id: UUID, user: AuthUser = Depends(require_user)):
 @router.post("/{project_id}/members", status_code=201)
 def add_member(project_id: UUID, body: MemberIn, user: AuthUser = Depends(require_user)):
     """
-    Add by email. An existing user is added right away; anyone else gets a
-    pending invite, accepted automatically the first time they sign in.
+    Add someone by the email of their account. Only people who already have
+    an account can be added; anyone else is told to create one first. (Older
+    pending invites from before this rule still show in list_members until
+    they're accepted or cancelled.)
     """
     email = body.email.strip().lower()
     if "@" not in email or " " in email:
@@ -208,25 +210,16 @@ def add_member(project_id: UUID, body: MemberIn, user: AuthUser = Depends(requir
         my_role = _need(conn, project_id, user, "admin")
         _check_can_grant(my_role, body.role)
         target = conn.execute("select id from users where email = %s", (email,)).fetchone()
-        if target:
-            if _role(conn, project_id, AuthUser(id=str(target["id"]), email=email)):
-                raise HTTPException(409, f"{email} is already a member.")
-            conn.execute(
-                "insert into project_members (project_id, user_id, role) values (%s, %s, %s)",
-                (project_id, target["id"], body.role),
-            )
-            return {"status": "added", "email": email, "role": body.role}
+        if target is None:
+            raise HTTPException(404, f"No account uses {email}. Ask them to create an account "
+                                     "on the sign-in page, then add them again.")
+        if _role(conn, project_id, AuthUser(id=str(target["id"]), email=email)):
+            raise HTTPException(409, f"{email} is already a member.")
         conn.execute(
-            """
-            insert into project_invites (project_id, email, role, invited_by)
-            values (%s, %s, %s, %s)
-            on conflict (project_id, email) do update
-              set role = excluded.role, invited_by = excluded.invited_by,
-                  accepted_at = null, created_at = now()
-            """,
-            (project_id, email, body.role, user.id),
+            "insert into project_members (project_id, user_id, role) values (%s, %s, %s)",
+            (project_id, target["id"], body.role),
         )
-        return {"status": "invited", "email": email, "role": body.role}
+        return {"status": "added", "email": email, "role": body.role}
 
 
 @router.patch("/{project_id}/members/{user_id}")

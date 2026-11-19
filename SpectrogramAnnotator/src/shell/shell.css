@@ -241,3 +241,8 @@
   white-space: normal;
   line-height: 1.2;
 }
+
+/* Password + Sign out, side by side (stacked when collapsed). */
+.sidebar-account-actions { display: flex; gap: 6px; }
+.sidebar-account-actions .sidebar-signout { flex: 1; }
+.sidebar--collapsed .sidebar-account-actions { flex-direction: column; }

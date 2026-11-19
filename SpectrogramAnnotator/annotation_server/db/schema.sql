@@ -3,9 +3,10 @@
 --
 -- Notes:
 --   * `users` rows are created by the annotation server on first sign-in: Google sign-in
---     (keyed on the Google account's stable `sub` id) or, for local testing
---     only, the developer login (DEV_LOGIN=true; no google_sub). Emails are
---     unique case-insensitively, so a Google sign-in links to a dev-login
+--     (keyed on the Google account's stable `sub` id), email + password
+--     (password_hash; set on first sign-in or with manage_users.py) or, for
+--     local testing only, the developer login (DEV_LOGIN=true). Emails are
+--     unique case-insensitively, so a Google sign-in links to an existing
 --     row with the same email.
 --   * No Row Level Security. The frontend never talks to the database; every
 --     read/write goes through FastAPI (annotation_server/app_auth.py), which
@@ -60,7 +61,8 @@ create type media_type   as enum ('audio', 'image', 'video');
 
 create table users (
   id            uuid primary key default gen_random_uuid(),
-  google_sub    text unique,            -- Google's stable account id (null: dev login only)
+  google_sub    text unique,            -- Google's stable account id (null: not linked to Google)
+  password_hash text,                   -- scrypt hash (passwords.py); null: no password sign-in
   email         text not null check (email = lower(trim(email))),
   display_name  text,
   avatar_url    text,
