@@ -118,7 +118,7 @@ function AnnotationRow({ annotation, layerId, layerColor, canEdit = true, onUpda
   );
 }
 
-function LayerTab({ layer, isActive, canEdit = true, onSelect, onUpdate, onRemove, onToggleVisible }) {
+export function LayerTab({ layer, isActive, canEdit = true, onSelect, onUpdate, onRemove, onToggleVisible }) {
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState(layer.title);
 
@@ -135,7 +135,7 @@ function LayerTab({ layer, isActive, canEdit = true, onSelect, onUpdate, onRemov
         checked={layer.visible !== false}
         onClick={e => e.stopPropagation()}
         onChange={() => onToggleVisible(layer.id)}
-        title="Show/hide this label's boxes on the spectrogram"
+        title="Show/hide this label's boxes"
       />
       <span className="layer-dot" style={{ background: layer.color }} />
       {editingName ? (

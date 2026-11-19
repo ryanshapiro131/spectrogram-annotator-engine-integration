@@ -30,8 +30,8 @@ export default function AppShell() {
     <div className={`shell ${collapsed ? 'shell--sidebar-collapsed' : ''}`}>
       <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
         <div className="sidebar-brand">
-          <span className="sidebar-brand-mark" title={collapsed ? 'Spectrogram Annotator' : undefined}>≋</span>
-          <span className="sidebar-text">Spectrogram Annotator</span>
+          <span className="sidebar-brand-mark" title={collapsed ? 'SPECTRA' : undefined}>≋</span>
+          <span className="sidebar-text">SPECTRA</span>
           <button
             className="sidebar-toggle"
             onClick={toggleCollapsed}

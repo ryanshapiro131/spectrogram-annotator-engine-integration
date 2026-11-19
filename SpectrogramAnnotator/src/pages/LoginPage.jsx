@@ -40,7 +40,7 @@ export default function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-brand"><span className="sidebar-brand-mark">≋</span> Spectrogram Annotator</div>
+        <div className="login-brand"><span className="sidebar-brand-mark">≋</span> SPECTRA</div>
         <h1 className="login-title">Sign in</h1>
         <p className="login-sub">Sign in to see your projects and annotate together.</p>
 

@@ -22,13 +22,17 @@
 --   media_files       recordings / images / videos registered to a project
 --                     (media_type). The media itself stays on the annotation
 --                     server's disk; content_hash is the server's `file_id`
---                     (sha1 prefix) that links the two. Only audio has an
---                     annotator so far; image/video columns are groundwork.
+--                     (sha1 prefix) that links the two. Audio and image have
+--                     annotators; video columns are groundwork.
 --   labels            ONE shared label vocabulary per project (name + color)
 --   annotations       time (and optional frequency) regions, always attributed
 --                     to the annotator who made them (created_by). `extra`
---                     holds media-specific geometry for future image/video
---                     annotators (boxes, polygons, frame ranges).
+--                     holds media-specific geometry: image boxes are
+--                     {"bbox": {"xmin","ymin","xmax","ymax"}, "difficult": bool}
+--                     in image pixels (no start/end time); room for
+--                     polygons / video frame ranges later.
+--
+-- Upgrading an existing database: apply db/migrations/*.sql in order.
 --
 -- Roles (ascending privilege — enum order matters, see has_project_role):
 --   viewer     read everything in the project
@@ -107,9 +111,12 @@ create table media_files (
   -- audio
   sample_rate   integer check (sample_rate > 0),
   n_channels    smallint check (n_channels > 0),
-  -- image / video
+  -- image / video (n_channels above = color channels for images)
   width_px      integer check (width_px > 0),
   height_px     integer check (height_px > 0),
+  -- labelImg's "verify image": someone checked this file's annotations.
+  verified_at   timestamptz,
+  verified_by   uuid references users (id) on delete set null,
   uploaded_by   uuid references users (id) on delete set null,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),

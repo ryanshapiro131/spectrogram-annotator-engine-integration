@@ -36,7 +36,12 @@ psql "postgresql://annotator:change-me@localhost:5432/annotator" -f db/schema.sq
 ```
 
 This is for a fresh, empty database. Running it twice fails with
-"already exists" errors, which is harmless. To start over from scratch
+"already exists" errors, which is harmless.
+
+**Upgrading an existing database:** apply each file in `db/migrations/` in
+order (they're safe to run more than once), e.g.
+`psql "postgresql://annotator:change-me@localhost:5432/annotator" -f db/migrations/001_image_annotator.sql`
+(adds the photo annotator's per-file "verified" flag). To start over from scratch
 (deletes everything): `dropdb annotator && createdb -O annotator annotator`
 as the postgres user, then apply it again.
 

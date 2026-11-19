@@ -285,10 +285,17 @@ _MEDIA_SELECT = """
     select f.id, f.project_id, f.media_type::text as media_type, f.content_hash, f.file_name,
            f.duration_sec, f.sample_rate, f.n_channels, f.width_px, f.height_px,
            f.uploaded_by, coalesce(u.display_name, u.email) as uploader_name,
+           f.verified_at, f.verified_by, coalesce(v.display_name, v.email) as verifier_name,
            f.created_at, f.updated_at,
            (select count(*) from annotations a where a.media_file_id = f.id) as annotation_count
-    from media_files f left join users u on u.id = f.uploaded_by
+    from media_files f
+    left join users u on u.id = f.uploaded_by
+    left join users v on v.id = f.verified_by
 """
+
+
+class MediaPatch(BaseModel):
+    verified: bool | None = None
 
 
 @router.get("/{project_id}/media")
@@ -304,6 +311,32 @@ def list_media(project_id: UUID, user: AuthUser = Depends(require_user)):
 def get_media(project_id: UUID, media_id: UUID, user: AuthUser = Depends(require_user)):
     with tx() as conn:
         _need(conn, project_id, user)
+        row = conn.execute(
+            _MEDIA_SELECT + " where f.project_id = %s and f.id = %s", (project_id, media_id)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "File not found in this project.")
+    return row
+
+
+@router.patch("/{project_id}/media/{media_id}")
+def update_media(project_id: UUID, media_id: UUID, body: MediaPatch, user: AuthUser = Depends(require_user)):
+    """Mark a file verified / not verified (labelImg's "verify image"). Annotators and up."""
+    with tx() as conn:
+        _need(conn, project_id, user, "annotator")
+        if body.verified is not None:
+            row = conn.execute(
+                """
+                update media_files
+                set verified_at = case when %s then now() else null end,
+                    verified_by = case when %s then %s::uuid else null end
+                where project_id = %s and id = %s
+                returning id
+                """,
+                (body.verified, body.verified, user.id, project_id, media_id),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(404, "File not found in this project.")
         row = conn.execute(
             _MEDIA_SELECT + " where f.project_id = %s and f.id = %s", (project_id, media_id)
         ).fetchone()
@@ -478,6 +511,43 @@ def _check_label_in_project(conn, project_id: UUID, label_id: UUID) -> None:
         raise HTTPException(400, "That label doesn't belong to this project.")
 
 
+def _check_image_box(extra: dict, media: dict) -> dict:
+    """
+    Image annotations are boxes: extra = {"bbox": {xmin, ymin, xmax, ymax},
+    "difficult": bool} in image pixels. Validates and normalizes it (min/max
+    order, clamped to the image like labelImg's snap_point_to_canvas).
+    """
+    bbox = extra.get("bbox") if isinstance(extra, dict) else None
+    if not isinstance(bbox, dict):
+        raise HTTPException(400, "Image annotations need extra.bbox = {xmin, ymin, xmax, ymax}.")
+    try:
+        x0, y0, x1, y1 = (float(bbox[k]) for k in ("xmin", "ymin", "xmax", "ymax"))
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "extra.bbox needs numeric xmin, ymin, xmax and ymax.")
+    w, h = media["width_px"], media["height_px"]
+    xmin, xmax = sorted((x0, x1))
+    ymin, ymax = sorted((y0, y1))
+    if w:
+        xmin, xmax = max(0.0, xmin), min(float(w), xmax)
+    if h:
+        ymin, ymax = max(0.0, ymin), min(float(h), ymax)
+    if xmax - xmin < 1 or ymax - ymin < 1:
+        raise HTTPException(400, "The box must be at least 1 pixel wide and tall, inside the image.")
+    return {**extra, "bbox": {"xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax},
+            "difficult": bool(extra.get("difficult", False))}
+
+
+def _media_row(conn, project_id: UUID, media_id: UUID) -> dict:
+    row = conn.execute(
+        "select media_type::text as media_type, width_px, height_px from media_files"
+        " where project_id = %s and id = %s",
+        (project_id, media_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "File not found in this project.")
+    return row
+
+
 @router.get("/{project_id}/media/{media_id}/annotations")
 def list_annotations(project_id: UUID, media_id: UUID, user: AuthUser = Depends(require_user)):
     with tx() as conn:
@@ -498,10 +568,9 @@ def create_annotation(project_id: UUID, media_id: UUID, body: AnnotationIn,
         raise HTTPException(400, "end_sec must be after start_sec.")
     with tx() as conn:
         _need(conn, project_id, user, "annotator")
-        if not conn.execute(
-            "select 1 from media_files where project_id = %s and id = %s", (project_id, media_id)
-        ).fetchone():
-            raise HTTPException(404, "File not found in this project.")
+        media = _media_row(conn, project_id, media_id)
+        if media["media_type"] == "image":
+            body.extra = _check_image_box(body.extra, media)
         _check_label_in_project(conn, project_id, body.label_id)
         row = conn.execute(
             """
@@ -518,7 +587,8 @@ def create_annotation(project_id: UUID, media_id: UUID, body: AnnotationIn,
 def _annotation_for_edit(conn, project_id: UUID, ann_id: UUID, user: AuthUser) -> dict:
     my_role = _need(conn, project_id, user, "annotator")
     row = conn.execute(
-        "select id, created_by, start_sec, end_sec from annotations where project_id = %s and id = %s",
+        "select id, media_file_id, created_by, start_sec, end_sec from annotations"
+        " where project_id = %s and id = %s",
         (project_id, ann_id),
     ).fetchone()
     if row is None:
@@ -544,6 +614,10 @@ def update_annotation(project_id: UUID, ann_id: UUID, body: AnnotationPatch,
             raise HTTPException(400, "end_sec must be after start_sec.")
         if "label_id" in changes:
             _check_label_in_project(conn, project_id, changes["label_id"])
+        if "extra" in changes:
+            media = _media_row(conn, project_id, row["media_file_id"])
+            if media["media_type"] == "image":
+                changes["extra"] = _check_image_box(changes["extra"], media)
         if changes:
             sql, params = _update_sql("annotations", changes, "id = %s", (ann_id,), "id")
             conn.execute(sql, params)
@@ -556,3 +630,72 @@ def delete_annotation(project_id: UUID, ann_id: UUID, user: AuthUser = Depends(r
         _annotation_for_edit(conn, project_id, ann_id, user)
         conn.execute("delete from annotations where id = %s", (ann_id,))
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Image annotation export (Pascal VOC via pascal_voc.py, or JSON)
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/export/images")
+def export_image_annotations(project_id: UUID, format: str = "voc", media_id: UUID | None = None,
+                             user: AuthUser = Depends(require_user)):
+    """
+    Every image in the project (or just media_id) with its boxes.
+      format=voc   one labelImg-style .xml per image; a .zip unless media_id is given
+      format=json  this app's JSON: labels + images[{file, width, height, verified, boxes}]
+    """
+    if format not in ("voc", "json"):
+        raise HTTPException(400, "format must be voc or json.")
+    with tx() as conn:
+        _need(conn, project_id, user)
+        project = conn.execute("select name from projects where id = %s", (project_id,)).fetchone()
+        files = conn.execute(
+            """
+            select id, file_name, width_px, height_px, n_channels, verified_at from media_files
+            where project_id = %s and media_type = 'image' and (%s::uuid is null or id = %s::uuid)
+            order by file_name
+            """,
+            (project_id, media_id, media_id),
+        ).fetchall()
+        anns = conn.execute(
+            """
+            select a.media_file_id, a.extra, l.name as label
+            from annotations a join labels l on l.id = a.label_id
+            join media_files f on f.id = a.media_file_id
+            where a.project_id = %s and f.media_type = 'image' and (%s::uuid is null or f.id = %s::uuid)
+            order by a.created_at
+            """,
+            (project_id, media_id, media_id),
+        ).fetchall()
+        labels = conn.execute(
+            "select name, color from labels where project_id = %s order by sort_order, created_at",
+            (project_id,),
+        ).fetchall()
+    if media_id and not files:
+        raise HTTPException(404, "Image not found in this project.")
+
+    by_file: dict = {f["id"]: [] for f in files}
+    for a in anns:
+        bbox = (a["extra"] or {}).get("bbox")
+        if bbox and a["media_file_id"] in by_file:
+            by_file[a["media_file_id"]].append({"label": a["label"], **bbox,
+                                                "difficult": bool(a["extra"].get("difficult"))})
+    images = [{
+        "filename": f["file_name"], "width": f["width_px"], "height": f["height_px"],
+        "depth": f["n_channels"] or 3, "verified": f["verified_at"] is not None, "boxes": by_file[f["id"]],
+    } for f in files if f["width_px"] and f["height_px"]]
+
+    slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in project["name"]).strip("_") or "project"
+    if format == "json":
+        payload = {
+            "version": "1.0", "type": "image", "project": project["name"],
+            "labels": labels,
+            "images": [{"file": im["filename"], "width": im["width"], "height": im["height"],
+                        "verified": im["verified"], "boxes": im["boxes"]} for im in images],
+        }
+        return Response(json.dumps(payload, indent=2, default=str), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{slug}_annotations.json"'})
+    if not images:
+        raise HTTPException(404, "This project has no images to export.")
+    from images_api import voc_response
+    return voc_response(project["name"], images, f"{slug}_voc.zip", force_zip=media_id is None)

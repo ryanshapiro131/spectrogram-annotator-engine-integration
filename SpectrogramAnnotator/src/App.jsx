@@ -7,6 +7,8 @@ import ProjectsPage, { ProjectsUnavailable } from './pages/ProjectsPage';
 import ProjectPage from './pages/ProjectPage';
 import ProjectAudioPage from './pages/ProjectAudioPage';
 import StandaloneAudioPage from './pages/StandaloneAudioPage';
+import ProjectImagePage from './pages/ProjectImagePage';
+import StandaloneImagePage from './pages/StandaloneImagePage';
 import ComingSoonPage from './pages/ComingSoonPage';
 
 // Project pages need the server's accounts/database; without them, explain
@@ -26,11 +28,11 @@ export default function App() {
             <Route index element={<ProjectsPage />} />
             <Route path="projects/:projectId" element={<ProjectsOnly><ProjectPage /></ProjectsOnly>} />
             <Route path="projects/:projectId/audio/:mediaId" element={<ProjectsOnly><ProjectAudioPage /></ProjectsOnly>} />
-            {/* Photo / video annotators: not built yet. */}
-            <Route path="projects/:projectId/photo/:mediaId" element={<ComingSoonPage type="image" />} />
+            <Route path="projects/:projectId/photo/:mediaId" element={<ProjectsOnly><ProjectImagePage /></ProjectsOnly>} />
+            {/* Video annotator: not built yet. */}
             <Route path="projects/:projectId/video/:mediaId" element={<ComingSoonPage type="video" />} />
             <Route path="audio" element={<StandaloneAudioPage />} />
-            <Route path="photo" element={<ComingSoonPage type="image" />} />
+            <Route path="photo" element={<StandaloneImagePage />} />
             <Route path="video" element={<ComingSoonPage type="video" />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

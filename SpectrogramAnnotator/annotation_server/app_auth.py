@@ -369,11 +369,13 @@ def me(user: AuthUser = Depends(require_user)):
 
 def register_media_file(user: AuthUser, project_id: str, file_id: str, meta: dict) -> dict:
     """
-    Insert (or fetch the existing) media_files row (media_type 'audio') for
-    this project + file. Idempotent: re-uploading the same audio to the same
-    project returns the row that's already there. 403 unless the user is at
-    least an annotator.
+    Insert (or fetch the existing) media_files row for this project + file.
+    meta["media_type"] is 'audio' (default: duration, sample_rate,
+    n_channels) or 'image' (width, height, n_channels = color channels).
+    Idempotent: re-uploading the same file to the same project returns the
+    row that's already there. 403 unless the user is at least an annotator.
     """
+    media_type = meta.get("media_type", "audio")
     try:
         uuid.UUID(project_id)
     except ValueError:
@@ -384,13 +386,14 @@ def register_media_file(user: AuthUser, project_id: str, file_id: str, meta: dic
         row = conn.execute(
             """
             insert into media_files
-              (project_id, media_type, content_hash, file_name, duration_sec, sample_rate, n_channels, uploaded_by)
-            values (%s, 'audio', %s, %s, %s, %s, %s, %s)
+              (project_id, media_type, content_hash, file_name, duration_sec, sample_rate,
+               n_channels, width_px, height_px, uploaded_by)
+            values (%s, %s::media_type, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (project_id, content_hash) do nothing
             returning *
             """,
-            (project_id, file_id, meta["file_name"] or "untitled", meta["duration"],
-             meta["sample_rate"], meta["n_channels"], user.id),
+            (project_id, media_type, file_id, meta["file_name"] or "untitled", meta.get("duration"),
+             meta.get("sample_rate"), meta.get("n_channels"), meta.get("width"), meta.get("height"), user.id),
         ).fetchone()
         if row is None:
             row = conn.execute(
