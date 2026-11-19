@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import ChangePasswordModal from '../auth/ChangePasswordModal';
 import { MEDIA_TYPES } from '../mediaTypes';
 import './shell.css';
 
@@ -14,7 +15,8 @@ function readCollapsed() {
 // except /login. It can be collapsed to a narrow icon rail to give the
 // editors more room; the choice is remembered per browser.
 export default function AppShell() {
-  const { authEnabled, user, signOut, status } = useAuth();
+  const { authEnabled, user, signOut, status, config } = useAuth();
+  const [changingPassword, setChangingPassword] = useState(false);
   const { pathname } = useLocation();
   const inProjects = pathname === '/' || pathname.startsWith('/projects');
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -82,9 +84,17 @@ ${user.email}` : undefined}>
                   <div className="sidebar-user-email">{user.email}</div>
                 </div>
               </div>
-              <button className="btn btn-ghost btn-sm sidebar-signout" onClick={signOut} title={collapsed ? 'Sign out' : undefined}>
-                {collapsed ? '⎋' : 'Sign out'}
-              </button>
+              <div className="sidebar-account-actions">
+                {config.password_login && (
+                  <button className="btn btn-ghost btn-sm sidebar-signout" onClick={() => setChangingPassword(true)}
+                    title={collapsed ? 'Change password' : undefined}>
+                    {collapsed ? '⚿' : 'Password'}
+                  </button>
+                )}
+                <button className="btn btn-ghost btn-sm sidebar-signout" onClick={signOut} title={collapsed ? 'Sign out' : undefined}>
+                  {collapsed ? '⎋' : 'Sign out'}
+                </button>
+              </div>
             </>
           ) : (
             <div className="sidebar-local sidebar-text">
@@ -99,6 +109,9 @@ ${user.email}` : undefined}>
       <div className="shell-main">
         <Outlet />
       </div>
+      {changingPassword && (
+        <ChangePasswordModal hasPassword={user?.has_password !== false} onClose={() => setChangingPassword(false)} />
+      )}
     </div>
   );
 }

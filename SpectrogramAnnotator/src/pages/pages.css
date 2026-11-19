@@ -295,6 +295,29 @@
 }
 .login-dev .btn { justify-content: center; padding: 8px 12px; }
 
+.login-password {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.login-google + .login-password {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.login-password .btn-solid { justify-content: center; padding: 8px 12px; }
+.login-password-note { font-size: 12px; color: var(--text-muted); margin: 0; }
+.login-switch {
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  color: #8fd0e8;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.login-switch:hover { text-decoration: underline; }
+
 .form-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .form-field em { color: var(--text-faint); font-style: normal; }
 .form-field input {

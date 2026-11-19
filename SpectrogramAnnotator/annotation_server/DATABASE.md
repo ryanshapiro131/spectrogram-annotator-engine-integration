@@ -41,7 +41,9 @@ This is for a fresh, empty database. Running it twice fails with
 **Upgrading an existing database:** apply each file in `db/migrations/` in
 order (they're safe to run more than once), e.g.
 `psql "postgresql://annotator:change-me@localhost:5432/annotator" -f db/migrations/001_image_annotator.sql`
-(adds the photo annotator's per-file "verified" flag). To start over from scratch
+(the photo annotator's per-file "verified" flag), then
+`002_password_login.sql` (password hashes for email + password sign-in).
+To start over from scratch
 (deletes everything): `dropdb annotator && createdb -O annotator annotator`
 as the postgres user, then apply it again.
 
@@ -52,14 +54,48 @@ Copy `.env.example` to `.env` and fill in:
 - `DATABASE_URL` — the connection string from step 3.
 - `SESSION_SECRET` — generate one:
   `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
-- `GOOGLE_CLIENT_ID` — from step 6. Until it's set (and `DEV_LOGIN` is off),
-  sign-in stays off: no login page, no projects, and the standalone audio
-  annotator at `/audio` works as before.
+- A sign-in method. Without one, sign-in stays off: no login page, no
+  projects, and the standalone annotators at `/audio` and `/photo` work as
+  before.
+  - `PASSWORD_LOGIN=true` — email + password (no Google needed; see
+    "Email + password accounts" below).
+  - `GOOGLE_CLIENT_ID` — Google sign-in, from step 6. Both can be on at once.
 - `REQUIRE_AUTH=true` once sign-in is on, so every API call needs a session.
 - `DEV_LOGIN` — leave it `false` on the server (see "Local development").
 
 Then `python3 -m pip install -r requirements.txt` and restart uvicorn. The
 startup log says which settings are still missing.
+
+### Email + password accounts
+
+1. Everyone creates their own account: **"New here? Create an account"** on
+   the sign-in page (email, password, optional name). A new account sees no
+   projects yet.
+2. Anyone signed in can create a project and becomes its owner.
+3. To add people to a project, they create an account first, tell you the
+   email they used, and you add that email in the project's Members panel.
+   Only existing accounts can be added; an unknown email gets "No account
+   uses …". Emails aren't verified, so add the address the person gave you,
+   not one you guessed.
+4. Forgotten password: `python3 manage_users.py set-password their@email`
+   (from `annotation_server`) resets it. `manage_users.py list` shows every
+   account; `remove-password` turns password sign-in off for one.
+
+To stop people creating their own accounts, set `PASSWORD_SIGNUP=closed`
+and create each account on the server instead (it asks for the password
+twice and doesn't show it):
+
+```bash
+python3 manage_users.py set-password someone@example.com --name "Their Name"
+```
+
+Passwords are stored only as scrypt hashes. After 10 wrong passwords for an
+email (or 30 from one address) within 15 minutes, sign-in pauses for that
+email or address; one address can create at most 20 accounts per hour. Users can change their own password with **Password** in
+the sidebar. Changing or resetting a password does not sign out sessions
+that are already open; they last `SESSION_DAYS`. Use HTTPS in front of the
+server when it's reachable beyond the lab network, since passwords are sent
+at sign-in.
 
 ## 5. pgAdmin (graphical interface)
 
@@ -119,8 +155,10 @@ so this needs the server's hostname plus HTTPS.
 - `POST /auth/google` — the frontend sends Google's ID token; the server
   verifies it, creates/updates the `users` row (linking an existing row with
   the same email), accepts any pending project invites for that email, and
-  returns a session token. `POST /auth/dev` does the same from just an email
-  when `DEV_LOGIN=true`.
+  returns a session token. `POST /auth/password` does the same from an email
+  and password (`POST /auth/password/setup` for a first sign-in,
+  `POST /auth/password/change` to change it), and `POST /auth/dev` from just
+  an email when `DEV_LOGIN=true`.
 - Every later request sends `Authorization: Bearer <session token>`.
 - `GET /auth/me` — the signed-in user and their projects.
 - `/projects/...` (`projects_api.py`) — projects, members and invites, media

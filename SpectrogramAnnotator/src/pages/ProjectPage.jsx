@@ -398,9 +398,7 @@ function MembersSection({ projectId, role, userId, onCount, onClose, onLeft }) {
     if (!email.trim()) return;
     run(async () => {
       const r = await apiJson(`/projects/${projectId}/members`, { method: 'POST', json: { email: email.trim(), role: newRole } });
-      setNotice(r.status === 'added'
-        ? `Added ${r.email} as ${r.role}.`
-        : `Invited ${r.email} as ${r.role}. They'll join the project the first time they sign in.`);
+      setNotice(`Added ${r.email} as ${r.role}.`);
       setEmail('');
     });
   };
@@ -469,7 +467,7 @@ function MembersSection({ projectId, role, userId, onCount, onClose, onLeft }) {
                 <span className="sidebar-avatar sidebar-avatar--initial sidebar-avatar--pending">?</span>
                 <div className="member-text">
                   <div className="member-name">{inv.email}</div>
-                  <div className="member-email">Invited · joins on first sign-in</div>
+                  <div className="member-email">Older invite · joins when they sign in with Google</div>
                 </div>
                 <RoleBadge role={inv.role} />
                 {isAdmin ? (
@@ -488,7 +486,7 @@ function MembersSection({ projectId, role, userId, onCount, onClose, onLeft }) {
               <input
                 className="text-input"
                 type="email"
-                placeholder="Add by email"
+                placeholder="Email of their account"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
               />
@@ -499,6 +497,7 @@ function MembersSection({ projectId, role, userId, onCount, onClose, onLeft }) {
             </form>
           )}
           <p className="section-help">
+            {isAdmin && 'You can add anyone who already has an account; others need to create one on the sign-in page first. '}
             Viewers can look at everything. Annotators can also upload files and add annotations, and edit or delete
             their own. Admins can edit anyone's work and manage members; owners can also manage admins and delete the project.
           </p>

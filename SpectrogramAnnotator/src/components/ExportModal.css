@@ -123,3 +123,6 @@
 }
 .image-export-title { font-size: 13px; font-weight: 600; }
 .image-export-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.change-password-modal { max-width: 380px; }
+.change-password-done { font-size: 13px; margin: 0 0 12px; }

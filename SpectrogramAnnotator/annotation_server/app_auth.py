@@ -12,6 +12,15 @@ Flow:
   3. Every later request sends `Authorization: Bearer <session token>`;
      `current_user` / `require_user` verify it locally (no Google call).
 
+Email + password sign-in (PASSWORD_LOGIN=true) works without Google:
+POST /auth/password checks the password against the scrypt hash in
+users.password_hash (passwords.py) and returns the same session token.
+Anyone can create an account (POST /auth/password/register) unless
+PASSWORD_SIGNUP=closed; manage_users.py on the server creates accounts and
+resets passwords. Project admins can only add people who already have an
+account (projects_api.add_member). Emails aren't verified, so people should
+be added by someone who knows they own that address.
+
 For local testing there is also a developer login (POST /auth/dev: type an
 email, no password), enabled only with DEV_LOGIN=true. Never turn it on for
 a server other people can reach: anyone could sign in as anyone.
@@ -26,6 +35,9 @@ Configuration (environment variables, or annotation_server/.env):
                        (…apps.googleusercontent.com)
     SESSION_SECRET     long random string used to sign session tokens
     SESSION_DAYS       session lifetime in days (default 7)
+    PASSWORD_LOGIN     "true" to allow email + password sign-in
+    PASSWORD_SIGNUP    "open" (default): anyone can create an account on the
+                       login page; "closed": only manage_users.py creates them
     DEV_LOGIN          "true" to allow passwordless sign-in by email
                        (local testing only)
     REQUIRE_AUTH       "true" to reject unauthenticated API calls (the audio
@@ -33,7 +45,7 @@ Configuration (environment variables, or annotation_server/.env):
                        work, for standalone /audio use.
 
 Sign-in is enabled when DATABASE_URL and SESSION_SECRET are set plus at least
-one sign-in method (GOOGLE_CLIENT_ID or DEV_LOGIN).
+one sign-in method (GOOGLE_CLIENT_ID, PASSWORD_LOGIN or DEV_LOGIN).
 """
 
 import os
@@ -44,8 +56,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, Field
+
+import passwords
 
 try:
     from dotenv import load_dotenv
@@ -64,9 +78,13 @@ SESSION_SECRET   = os.environ.get("SESSION_SECRET", "")
 SESSION_DAYS     = float(os.environ.get("SESSION_DAYS", "7"))
 REQUIRE_AUTH     = _flag("REQUIRE_AUTH")
 DEV_LOGIN        = _flag("DEV_LOGIN")
+PASSWORD_LOGIN   = _flag("PASSWORD_LOGIN")
+PASSWORD_SIGNUP  = os.environ.get("PASSWORD_SIGNUP", "open").strip().lower()
+if PASSWORD_SIGNUP not in ("open", "closed"):
+    raise RuntimeError("PASSWORD_SIGNUP must be 'open' or 'closed'.")
 
 DB_ENABLED   = bool(DATABASE_URL)
-AUTH_ENABLED = bool(DB_ENABLED and SESSION_SECRET and (GOOGLE_CLIENT_ID or DEV_LOGIN))
+AUTH_ENABLED = bool(DB_ENABLED and SESSION_SECRET and (GOOGLE_CLIENT_ID or PASSWORD_LOGIN or DEV_LOGIN))
 
 _SESSION_ALG      = "HS256"
 _SESSION_ISSUER   = "spectrogram-annotator"
@@ -74,7 +92,8 @@ _SESSION_ISSUER   = "spectrogram-annotator"
 if not AUTH_ENABLED:
     missing = [n for n, v in (("DATABASE_URL", DATABASE_URL),
                               ("SESSION_SECRET", SESSION_SECRET),
-                              ("GOOGLE_CLIENT_ID or DEV_LOGIN", GOOGLE_CLIENT_ID or DEV_LOGIN)) if not v]
+                              ("GOOGLE_CLIENT_ID, PASSWORD_LOGIN or DEV_LOGIN",
+                               GOOGLE_CLIENT_ID or PASSWORD_LOGIN or DEV_LOGIN)) if not v]
     print(f"[server] Sign-in disabled ({', '.join(missing)} unset): accounts and "
           "projects are off; the standalone audio annotator still works.")
     if REQUIRE_AUTH:
@@ -210,7 +229,7 @@ def require_user(user: AuthUser | None = Depends(current_user)) -> AuthUser:
 
 
 # ---------------------------------------------------------------------------
-# Routes: /auth/config, /auth/google, /auth/dev (sign in), /auth/me
+# Routes: /auth/config, /auth/google, /auth/password, /auth/dev (sign in), /auth/me
 # ---------------------------------------------------------------------------
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -223,6 +242,8 @@ def auth_config():
         "auth_enabled":     AUTH_ENABLED,
         "google_client_id": GOOGLE_CLIENT_ID if AUTH_ENABLED else "",
         "dev_login":        AUTH_ENABLED and DEV_LOGIN,
+        "password_login":   AUTH_ENABLED and PASSWORD_LOGIN,
+        "password_signup":  AUTH_ENABLED and PASSWORD_LOGIN and PASSWORD_SIGNUP == "open",
     }
 
 
@@ -278,23 +299,28 @@ def sign_in_with_google(body: GoogleSignIn):
         # login): link it rather than create a duplicate.
         existing = conn.execute(
             """
-            select id from users where google_sub = %s
+            select id, false as linking from users where google_sub = %s
             union all
-            select id from users where email = %s and google_sub is null
+            select id, true as linking from users where email = %s and google_sub is null
             limit 1
             """,
             (info["sub"], email),
         ).fetchone()
         if existing:
+            # Linking an email + password account: Google has now proved who
+            # owns the address, but nobody proved who chose that password
+            # (sign-up doesn't verify emails), so it's removed. The owner can
+            # set a new one with the sidebar's Password button.
             user = conn.execute(
                 """
                 update users set google_sub = %s, email = %s,
                        display_name = coalesce(display_name, %s),
-                       avatar_url = %s, last_login_at = now()
+                       avatar_url = %s, last_login_at = now(),
+                       password_hash = case when %s then null else password_hash end
                 where id = %s
                 returning id, email, display_name, avatar_url
                 """,
-                (info["sub"], email, name, info.get("picture"), existing["id"]),
+                (info["sub"], email, name, info.get("picture"), existing["linking"], existing["id"]),
             ).fetchone()
         else:
             user = conn.execute(
@@ -342,11 +368,159 @@ def sign_in_dev(body: DevSignIn):
     return _session_response(user)
 
 
+# ---------------------------------------------------------------------------
+# Email + password
+# ---------------------------------------------------------------------------
+
+# Failed sign-ins: 10 per email and 30 per client address per 15 minutes.
+_email_throttle = passwords.Throttle(limit=10, window=15 * 60)
+_client_throttle = passwords.Throttle(limit=30, window=15 * 60)
+
+_BAD_LOGIN = "Wrong email or password."
+
+
+def _valid_email(raw: str) -> str:
+    email = raw.strip().lower()
+    local, _, domain = email.partition("@")
+    if not local or "." not in domain or " " in email or len(email) > 254:
+        raise HTTPException(400, "Enter a valid email address.")
+    return email
+
+
+def _need_password_login() -> None:
+    if not (AUTH_ENABLED and PASSWORD_LOGIN):
+        raise HTTPException(404, "Password sign-in is not enabled on this server.")
+
+
+def _check_throttle(key: str, client: str) -> None:
+    wait = max(_email_throttle.retry_after(key), _client_throttle.retry_after(client))
+    if wait:
+        raise HTTPException(429, f"Too many failed attempts. Try again in {max(1, wait // 60)} min.",
+                            headers={"Retry-After": str(wait)})
+
+
+def _client(request: Request) -> str:
+    # Behind a reverse proxy this is the proxy's address, so the per-client
+    # limit then applies to everyone together; the per-email limit still works.
+    return request.client.host if request.client else "unknown"
+
+
+class PasswordSignIn(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=passwords.MAX_LENGTH)
+
+
+class PasswordRegister(PasswordSignIn):
+    display_name: str | None = Field(default=None, max_length=100)
+
+
+class PasswordChange(BaseModel):
+    current_password: str | None = Field(default=None, max_length=passwords.MAX_LENGTH)
+    new_password: str = Field(max_length=passwords.MAX_LENGTH)
+
+
+# New accounts: at most 20 per client address per hour.
+_signup_throttle = passwords.Throttle(limit=20, window=60 * 60)
+
+
+@router.post("/password")
+def sign_in_with_password(body: PasswordSignIn, request: Request):
+    _need_password_login()
+    email = _valid_email(body.email)
+    client = _client(request)
+    _check_throttle(email, client)
+
+    with tx() as conn:
+        row = conn.execute(
+            "select id, password_hash from users where email = %s", (email,)
+        ).fetchone()
+        stored = row["password_hash"] if row else None
+        ok = passwords.verify_password(body.password, stored)  # same cost for unknown emails
+        if not ok:
+            _email_throttle.fail(email)
+            _client_throttle.fail(client)
+            raise HTTPException(401, _BAD_LOGIN)
+        new_hash = passwords.hash_password(body.password) if passwords.needs_rehash(stored) else stored
+        user = conn.execute(
+            """
+            update users set last_login_at = now(), password_hash = %s where id = %s
+            returning id, email, display_name, avatar_url
+            """,
+            (new_hash, row["id"]),
+        ).fetchone()
+    _email_throttle.clear(email)
+    return _session_response(user)
+
+
+@router.post("/password/register", status_code=201)
+def create_account(body: PasswordRegister, request: Request):
+    """
+    Anyone can create an account (unless PASSWORD_SIGNUP=closed). A new
+    account sees nothing until it creates a project or a project admin adds
+    it; admins can only add people who already have an account.
+    """
+    _need_password_login()
+    if PASSWORD_SIGNUP != "open":
+        raise HTTPException(403, "Creating accounts is turned off on this server. Ask an administrator.")
+    email = _valid_email(body.email)
+    client = _client(request)
+    wait = _signup_throttle.retry_after(client)
+    if wait:
+        raise HTTPException(429, f"Too many new accounts from here. Try again in {max(1, wait // 60)} min.",
+                            headers={"Retry-After": str(wait)})
+    problem = passwords.password_problem(body.password)
+    if problem:
+        raise HTTPException(400, problem)
+
+    pw_hash = passwords.hash_password(body.password)
+    name = (body.display_name or "").strip() or email.split("@")[0]
+    with tx() as conn:
+        existing = conn.execute(
+            "select password_hash is not null as has_password from users where email = %s", (email,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "An account with this email already exists. Sign in instead."
+                                if existing["has_password"] else
+                                "An account with this email already exists without a password. "
+                                "Ask the server administrator to set one.")
+        user = conn.execute(
+            """
+            insert into users (email, display_name, password_hash, last_login_at)
+            values (%s, %s, %s, now()) returning id, email, display_name, avatar_url
+            """,
+            (email, name, pw_hash),
+        ).fetchone()
+    _signup_throttle.fail(client)  # counts sign-ups, not failures
+    return _session_response(user)
+
+
+@router.post("/password/change", status_code=204)
+def change_password(body: PasswordChange, request: Request, user: AuthUser = Depends(require_user)):
+    """Change your password (or add one to an account without one, e.g. Google-only)."""
+    _need_password_login()
+    problem = passwords.password_problem(body.new_password)
+    if problem:
+        raise HTTPException(400, problem)
+    client = _client(request)
+    _check_throttle(user.id, client)
+    with tx() as conn:
+        row = conn.execute("select password_hash from users where id = %s", (user.id,)).fetchone()
+        if row is None:
+            raise HTTPException(401, "Account no longer exists.")
+        if row["password_hash"] and not passwords.verify_password(body.current_password or "", row["password_hash"]):
+            _email_throttle.fail(user.id)
+            _client_throttle.fail(client)
+            raise HTTPException(400, "Your current password is wrong.")
+        conn.execute("update users set password_hash = %s where id = %s",
+                     (passwords.hash_password(body.new_password), user.id))
+
+
 @router.get("/me")
 def me(user: AuthUser = Depends(require_user)):
     with tx() as conn:
         row = conn.execute(
-            "select id, email, display_name, avatar_url from users where id = %s",
+            "select id, email, display_name, avatar_url, password_hash is not null as has_password"
+            " from users where id = %s",
             (user.id,),
         ).fetchone()
         if row is None:
