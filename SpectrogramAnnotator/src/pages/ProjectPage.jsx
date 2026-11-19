@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { apiJson } from '../api';
+import { apiFetch, apiJson } from '../api';
 import { useAuth } from '../auth/AuthContext';
 import { uploadAudio } from '../audioUpload';
+import { IMAGE_ACCEPT, saveDownload, uploadImage } from '../imageUpload';
 import { AUDIO_ACCEPT, describeTransfer, formatDuration } from '../annotator/AudioAnnotator';
 import { mediaFilePath, mediaTypeInfo } from '../mediaTypes';
 import { formatDate, RoleBadge } from './ProjectsPage';
@@ -185,10 +186,10 @@ function ProjectHeader({ project, onRenamed, onDeleted, membersButton }) {
 }
 
 // ---------------------------------------------------------------------------
-// Files: one group per media type + upload audio
+// Files: one group per media type + upload audio / photos
 // ---------------------------------------------------------------------------
 function FilesSection({ projectId, role, userId, media, reload }) {
-  const [uploads, setUploads] = useState([]); // [{ key, name, status, transfer, error }]
+  const [uploads, setUploads] = useState([]); // [{ key, type, name, status, transfer, error }]
   const [error, setError] = useState(null);
   const queueRef = useRef(Promise.resolve());
   const keyRef = useRef(0);
@@ -199,13 +200,14 @@ function FilesSection({ projectId, role, userId, media, reload }) {
     setUploads(us => us.map(u => u.key === key ? { ...u, ...(typeof changes === 'function' ? changes(u) : changes) } : u));
 
   // Files upload one after another (each can be large).
-  const addFiles = (files) => {
+  const addFiles = (files, type = 'audio') => {
+    const upload = type === 'image' ? uploadImage : uploadAudio;
     for (const file of files) {
       const key = ++keyRef.current;
-      setUploads(us => [...us, { key, name: file.name, status: 'queued', transfer: null, error: null }]);
+      setUploads(us => [...us, { key, type, name: file.name, status: 'queued', transfer: null, error: null }]);
       queueRef.current = queueRef.current.then(async () => {
         try {
-          await uploadAudio(file, {
+          await upload(file, {
             projectId,
             onPhase: (status) => patchUpload(key, { status }),
             onTransfer: (t) => patchUpload(key, u => ({ transfer: { ...u.transfer, ...t } })),
@@ -231,6 +233,15 @@ function FilesSection({ projectId, role, userId, media, reload }) {
     }
   };
 
+  const exportImages = async () => {
+    try {
+      setError(null);
+      await saveDownload(await apiFetch(`/projects/${projectId}/export/images?format=voc`), 'annotations_voc.zip');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   if (media === null) return <div className="page-loading">Loading files…</div>;
 
   return (
@@ -240,7 +251,10 @@ function FilesSection({ projectId, role, userId, media, reload }) {
         const info = mediaTypeInfo(group.type);
         const files = media.filter(f => mediaTypeInfo(f.media_type).type === group.type);
         const isAudio = group.type === 'audio';
+        const isImage = group.type === 'image';
+        const uploadable = isAudio || isImage;
         const timed = group.type !== 'image';
+        const groupUploads = uploads.filter(u => u.type === group.type);
         return (
           <section key={group.type} className={`card section file-group file-group--${group.type}`}>
             <div className="section-head">
@@ -249,24 +263,30 @@ function FilesSection({ projectId, role, userId, media, reload }) {
                 <h2 className="section-title">{group.title}</h2>
                 <span className="file-group-count">{files.length}</span>
               </div>
-              {isAudio && canUpload && (
+              {isImage && files.length > 0 && (
+                <button className="btn btn-ghost btn-sm" onClick={exportImages} title="Download every photo's boxes as labelImg / Pascal VOC .xml files (zip)">
+                  Export VOC
+                </button>
+              )}
+              {uploadable && canUpload && (
                 <label className="btn btn-solid btn-sm file-input-label">
-                  + Upload audio
+                  {isAudio ? '+ Upload audio' : '+ Upload photos'}
                   <input
-                    type="file" accept={AUDIO_ACCEPT} multiple style={{ display: 'none' }}
-                    data-testid="project-upload-input"
-                    onChange={e => { const fs = [...e.target.files]; e.target.value = ''; addFiles(fs); }}
+                    type="file" accept={isAudio ? AUDIO_ACCEPT : IMAGE_ACCEPT} multiple style={{ display: 'none' }}
+                    data-testid={isAudio ? 'project-upload-input' : 'project-upload-images'}
+                    onChange={e => { const fs = [...e.target.files]; e.target.value = ''; addFiles(fs, group.type); }}
                   />
                 </label>
               )}
               {!info.available && <span className="file-group-soon">Annotator coming soon</span>}
             </div>
 
-            {isAudio && uploads.map(u => <UploadRow key={u.key} upload={u} onDismiss={() => setUploads(us => us.filter(x => x.key !== u.key))} />)}
+            {groupUploads.map(u => <UploadRow key={u.key} upload={u} onDismiss={() => setUploads(us => us.filter(x => x.key !== u.key))} />)}
 
             {files.length === 0 ? (
               <div className="section-empty">
                 {group.none}{isAudio && canUpload ? ' Upload a recording to start annotating.' : ''}
+                {isImage && canUpload ? ' Upload photos to start drawing boxes.' : ''}
               </div>
             ) : (
               <table className="data-table">
@@ -274,7 +294,9 @@ function FilesSection({ projectId, role, userId, media, reload }) {
                   <tr>
                     <th>Name</th>
                     {timed && <th>Length</th>}
-                    <th>Annotations</th>
+                    {isImage && <th>Size</th>}
+                    <th>{isImage ? 'Boxes' : 'Annotations'}</th>
+                    {isImage && <th>Verified</th>}
                     <th className="col-optional">Uploaded by</th>
                     <th className="col-optional">Added</th>
                     <th />
@@ -289,7 +311,9 @@ function FilesSection({ projectId, role, userId, media, reload }) {
                           <Link to={mediaFilePath(projectId, f)} className="file-link">{f.file_name}</Link>
                         </td>
                         {timed && <td className="num">{f.duration_sec != null ? formatDuration(f.duration_sec) : '—'}</td>}
+                        {isImage && <td className="num">{f.width_px && f.height_px ? `${f.width_px} × ${f.height_px}` : '—'}</td>}
                         <td className="num">{f.annotation_count}</td>
+                        {isImage && <td title={f.verifier_name ? `by ${f.verifier_name}` : undefined}>{f.verified_at ? '✓' : ''}</td>}
                         <td className="col-optional">{f.uploader_name || '—'}</td>
                         <td className="col-optional">{formatDate(f.created_at)}</td>
                         <td className="row-actions">

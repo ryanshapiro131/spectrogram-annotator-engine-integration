@@ -1,10 +1,10 @@
 // The kinds of media the app knows about. `type` matches media_files.media_type
 // on the server; `slug` is the URL segment (/photo, /projects/:id/photo/:mediaId).
-// Adding the photo or video annotator: build its page, set available: true,
-// and route it in App.jsx (the coming-soon routes mark the spots).
+// Adding the video annotator: build its page, set available: true, and route
+// it in App.jsx (the coming-soon routes mark the spots).
 export const MEDIA_TYPES = [
   { type: 'audio', slug: 'audio', label: 'Audio', icon: '♪', available: true },
-  { type: 'image', slug: 'photo', label: 'Photo', icon: '▣', available: false },
+  { type: 'image', slug: 'photo', label: 'Photo', icon: '▣', available: true },
   { type: 'video', slug: 'video', label: 'Video', icon: '▶', available: false },
 ];
 

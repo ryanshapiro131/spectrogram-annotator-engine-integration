@@ -10,19 +10,30 @@ const fromLabel = (l) => ({
   visible: true, createdBy: l.created_by,
 });
 
+// Audio annotations have start/end; image annotations have box
+// ({ xmin, ymin, xmax, ymax } in image pixels) + difficult, stored in the
+// API's `extra` (see db/schema.sql).
 const fromAnnotation = (a) => ({
   id: a.id, key: a.id, labelId: a.label_id, name: a.name ?? '', start: a.start_sec, end: a.end_sec,
+  box: a.extra?.bbox ?? null, difficult: !!a.extra?.difficult,
   createdBy: a.created_by, creatorName: a.creator_name,
 });
 
-// Annotation fields as the API names them.
-const toAnnotationPatch = (changes) => {
+// Annotation fields as the API names them. `merged` is the annotation with
+// the changes applied (extra is replaced as a whole, so it needs both parts).
+// labelId is mapped to its real id when the request runs (see updateAnnotation).
+const toAnnotationPatch = (changes, merged) => {
   const out = {};
   if ('name' in changes) out.name = changes.name;
   if ('start' in changes) out.start_sec = changes.start;
   if ('end' in changes) out.end_sec = changes.end;
+  if ('box' in changes || 'difficult' in changes) out.extra = { bbox: merged.box, difficult: !!merged.difficult };
   return out;
 };
+
+const toAnnotationCreate = (fields) => (fields.box
+  ? { extra: { bbox: fields.box, difficult: !!fields.difficult } }
+  : { start_sec: fields.start, end_sec: fields.end });
 
 const toLabelPatch = (changes) => {
   const out = {};
@@ -76,15 +87,18 @@ export function useProjectAnnotations({ projectId, mediaId, role, userId }) {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
+    setAnns([]); // the photo annotator reuses this store as it moves between images
     Promise.all([
       apiJson(`${base}/labels`),
       apiJson(`${base}/media/${mediaId}/annotations`),
     ]).then(([labelRows, annRows]) => {
       if (cancelled) return;
-      const ls = labelRows.map(fromLabel);
+      // Keep show/hide and the active label when moving to another file.
+      const hidden = new Set(labelsRef.current.filter(l => l.visible === false).map(l => l.id));
+      const ls = labelRows.map(fromLabel).map(l => (hidden.has(l.id) ? { ...l, visible: false } : l));
       setLabels(ls);
       setAnns(annRows.map(fromAnnotation));
-      setActiveLayerId(ls[0]?.id ?? null);
+      setActiveLayerId(id => (ls.some(l => l.id === id) ? id : ls[0]?.id ?? null));
       setLoading(false);
     }).catch(err => {
       if (cancelled) return;
@@ -249,18 +263,24 @@ export function useProjectAnnotations({ projectId, mediaId, role, userId }) {
   // ---------------------------------------------------------------------------
   // Annotations
   // ---------------------------------------------------------------------------
-  const addAnnotation = useCallback((labelId, { start, end }) => {
+  // fields: { start, end } (audio) or { box, difficult } (image). Returns
+  // the new annotation's key (stays the same after the real id arrives).
+  const addAnnotation = useCallback((labelId, fields) => {
     const lid = current(labelId);
     const label = labelsRef.current.find(l => l.id === lid);
     const tmp = `tmp-ann-${tmpCounter.current++}`;
-    const ann = { id: tmp, key: tmp, labelId: lid, name: label?.title ?? '', start, end, createdBy: userId, creatorName: null };
+    const ann = {
+      id: tmp, key: tmp, labelId: lid, name: label?.title ?? '', start: null, end: null, box: null,
+      difficult: false, ...fields, createdBy: userId, creatorName: null,
+    };
+    annsRef.current = [...annsRef.current, ann]; // visible to a second call before re-render
     setAnns(as => [...as, ann]);
     enqueue(async () => {
       const realLabel = real(lid);
       if (!realLabel) throw new Error('Its label could not be saved.');
       const row = await apiJson(`${base}/media/${mediaId}/annotations`, {
         method: 'POST',
-        json: { label_id: realLabel, name: ann.name, start_sec: start, end_sec: end },
+        json: { label_id: realLabel, name: ann.name, ...toAnnotationCreate(fields) },
       });
       idMap.current.set(tmp, row.id);
       // Only the id/attribution: values may have been edited locally since.
@@ -271,17 +291,26 @@ export function useProjectAnnotations({ projectId, mediaId, role, userId }) {
       idMap.current.set(tmp, null);
       setAnns(as => as.filter(a => a.id !== tmp));
     });
+    return tmp;
   }, [base, mediaId, enqueue, userId]);
 
   const updateAnnotation = useCallback((_layerId, annId, changes) => {
     const id = current(annId);
     const before = annsRef.current.find(a => a.id === id);
     if (!before) return;
-    setAnns(as => as.map(a => a.id === id ? { ...a, ...changes } : a));
+    const merged = { ...before, ...changes };
+    if ('labelId' in changes) merged.labelId = current(changes.labelId);
+    annsRef.current = annsRef.current.map(a => a.id === id ? merged : a);
+    setAnns(as => as.map(a => a.id === id ? { ...a, ...changes, labelId: merged.labelId } : a));
     enqueue(async () => {
       const rid = real(id);
       if (!rid) return;
-      await apiJson(`${base}/annotations/${rid}`, { method: 'PATCH', json: toAnnotationPatch(changes) });
+      const json = toAnnotationPatch(changes, merged);
+      if ('labelId' in changes) {
+        json.label_id = real(merged.labelId);
+        if (!json.label_id) throw new Error('Its label could not be saved.');
+      }
+      await apiJson(`${base}/annotations/${rid}`, { method: 'PATCH', json });
     }, () => {
       const prev = pick(before, Object.keys(changes));
       setAnns(as => as.map(a => sameId(id)(a.id) ? { ...a, ...prev } : a));
@@ -293,6 +322,7 @@ export function useProjectAnnotations({ projectId, mediaId, role, userId }) {
     const idx = annsRef.current.findIndex(a => a.id === id);
     if (idx < 0) return;
     const before = annsRef.current[idx];
+    annsRef.current = annsRef.current.filter(a => a.id !== id);
     setAnns(as => as.filter(a => a.id !== id));
     enqueue(async () => {
       const rid = real(id);

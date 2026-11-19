@@ -47,6 +47,7 @@ from starlette.concurrency import run_in_threadpool
 # Imported before ENGINE_BIN is read: app_auth loads annotation_server/.env.
 from app_auth import AuthUser, current_user, register_media_file
 from app_auth import router as auth_router
+from images_api import router as images_router
 from projects_api import router as projects_router
 
 CHUNK_DURATION = 180
@@ -92,6 +93,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(images_router)
 
 _registry: dict[str, dict] = {}
 _registry_lock = threading.Lock()

@@ -92,7 +92,8 @@ export default function ProjectFilePicker({ mediaType = 'audio', noun = 'audio' 
                     <button className="picker-item picker-item--file" onClick={() => navigate(mediaFilePath(selected, f))}>
                       <span className="picker-item-name">{f.file_name}</span>
                       <span className="picker-item-meta">
-                        {f.duration_sec != null ? formatDuration(f.duration_sec) : ''}
+                        {f.duration_sec != null ? formatDuration(f.duration_sec) : f.width_px ? `${f.width_px}×${f.height_px}` : ''}
+                        {f.verified_at ? ' · ✓' : ''}
                         {f.annotation_count ? ` · ${f.annotation_count} ann.` : ''}
                       </span>
                       <span className="picker-item-go" aria-hidden="true">→</span>
